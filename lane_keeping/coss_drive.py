@@ -30,24 +30,48 @@ import copy
 import json
 import rospy
 
-from std_msgs.msg import String
+from std_msgs.msg import String, Byte
 
 class AutomonousDrivingProcess():
     def __init__(self):
         self.rcBrain = RcBrainThread()
 
-        rospy.init_node('COSS_vihicle', anonymous=False)
+        rospy.init_node('COSS_Vihicle', anonymous=False)
         self.publisher = rospy.Publisher('/automobile/command', String, queue_size=1)
+        self.traffic_sub = rospy.Subscriber("/automobile/trafficlight/start", Byte, self.callback)
+        self.startSign = 0
+        self.raceStart = False
 
-    def run(self):
+    def callback(self, data):
+        self.startSign = data.data
+        #print("Start Sign: ", self.startSign)
+        self.start()
+
+    def start(self):
         command = {}
-        command['action']        =  '1'
-        command['speed']    =  float(0.20)
+        print("Start Sign: ", self.startSign)
+        if self.startSign == 2:
+            command['action']        =  '1'
+            command['speed']    =  float(0.20)
 
-        command = json.dumps(command)
+            command = json.dumps(command)
+            self.raceStart = True
+        else:
+            if self.raceStart:
+                command['action']        =  '1'
+                command['speed']    =  float(0.20)
 
-        while True:
-            self.publisher.publish(command)
+                command = json.dumps(command)
+            else:
+                command['action']        =  '1'
+                command['speed']    =  float(0.0)
+
+                command = json.dumps(command)
+
+
+        self.publisher.publish(command)
+        print("Success Publish")
+        
 
 
 class RcBrainConfigParams:
@@ -376,6 +400,7 @@ class RcBrainThread:
 if __name__ == '__main__':
     try:
         nod = AutomonousDrivingProcess()
-        nod.run()
+        nod.start()
+        rospy.spin()
     except rospy.ROSInterruptException:
         pass
