@@ -1,0 +1,8 @@
+prefix=/home/hanbin/Simulator/test_env/devel
+
+Name: bno055_plugin
+Description: Description of bno055_plugin
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: gazebo_ros roscpp utils
