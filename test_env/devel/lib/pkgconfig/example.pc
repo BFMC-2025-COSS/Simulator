@@ -1,8 +1,0 @@
-prefix=/home/hanbin/Simulator/test_env/devel
-
-Name: example
-Description: Description of example
-Version: 1.0.0
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
