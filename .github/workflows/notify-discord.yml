@@ -1,0 +1,32 @@
+name: Notify Discord on Pull Request
+
+on:
+  pull_request:
+    types: [opened, closed, reopened]
+
+jobs:
+  notify-discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send notification to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          case "${{ github.event.action }}" in
+            opened)
+              MESSAGE=":sparkles: A new Pull Request has been opened by **${{ github.event.pull_request.user.login }}**!\n**Title:** ${{ github.event.pull_request.title }}\n[View Pull Request](${{ github.event.pull_request.html_url }})"
+              ;;
+            closed)
+              if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
+                MESSAGE=":tada: The Pull Request by **${{ github.event.pull_request.user.login }}** has been **merged**!\n**Title:** ${{ github.event.pull_request.title }}\n[View Pull Request](${{ github.event.pull_request.html_url }})"
+              else
+                MESSAGE=":x: The Pull Request by **${{ github.event.pull_request.user.login }}** has been **closed without merging**.\n**Title:** ${{ github.event.pull_request.title }}\n[View Pull Request](${{ github.event.pull_request.html_url }})"
+              fi
+              ;;
+            reopened)
+              MESSAGE=":repeat: The Pull Request by **${{ github.event.pull_request.user.login }}** has been **reopened**!\n**Title:** ${{ github.event.pull_request.title }}\n[View Pull Request](${{ github.event.pull_request.html_url }})"
+              ;;
+          esac
+          curl -H "Content-Type: application/json" \
+               -d "{\"content\": \"$MESSAGE\"}" \
+               "$DISCORD_WEBHOOK_URL"
