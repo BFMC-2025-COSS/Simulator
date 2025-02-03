@@ -3,8 +3,10 @@
 import rospy
 import rospkg
 
+from std_msgs.msg import Header
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
+from node_to_path.msg import PathWithDotted, DottedPose
 
 import networkx as nx
 import os
@@ -29,6 +31,8 @@ class GraphMLToPathNode:
 
         # Publisher for nav_msgs/Path
         self.path_pub = rospy.Publisher('/global_path', Path, queue_size=1)
+        # Publisher for the custom PathWithDotted
+        self.dotted_path_pub = rospy.Publisher('/global_path_dotted', PathWithDotted, queue_size=1)
 
         # Load the GraphML file
         self.graph = self.load_graphml_file(self.graphml_file)
@@ -40,6 +44,8 @@ class GraphMLToPathNode:
 
         # Convert the node list into a nav_msgs/Path
         self.global_path_msg = self.build_path_msg_from_nodes(self.graph, full_node_list)
+        # Convert the node list into a custom PathWithDotted
+        self.dotted_path_msg = self.build_dotted_path_msg(self.graph, full_node_list)
 
         publish_rate = rospy.get_param('~publish_rate', 1.0)
         self.rate = rospy.Rate(publish_rate)
@@ -88,7 +94,6 @@ class GraphMLToPathNode:
             start_n = str(key_nodes[i])
             end_n   = str(key_nodes[i+1])
 
-            # If start_n or end_n is not in the graph
             if start_n not in graph.nodes():
                 rospy.logwarn(f"Key node {start_n} not in graph. Skipping.")
                 continue
@@ -97,13 +102,11 @@ class GraphMLToPathNode:
                 continue
 
             try:
-                # networkx.shortest_path -> BFS-based shortest path in an unweighted graph
                 sub_path = nx.shortest_path(graph, source=start_n, target=end_n)
             except nx.NetworkXNoPath:
                 rospy.logwarn(f"No path found between {start_n} and {end_n}. Skipping.")
                 continue
 
-            # Example sub_path: ['263', '264', '265', '59']
             if i == 0:
                 full_list.extend(sub_path)
             else:
@@ -131,7 +134,6 @@ class GraphMLToPathNode:
                 continue
 
             node_data = graph.nodes[node_id]
-            # Extract x,y from GraphML (change keys if necessary)
             x = float(node_data.get('x', 0.0))
             y = float(node_data.get('y', 0.0))
 
@@ -146,14 +148,72 @@ class GraphMLToPathNode:
 
         return path_msg
 
+    def build_dotted_path_msg(self, graph, node_list):
+        """
+        Convert node_list -> PathWithDotted.
+        """
+        dotted_path = PathWithDotted()
+        dotted_path.header.frame_id = "map"
+        dotted_path.header.stamp = rospy.Time.now()
+
+        if graph is None:
+            rospy.logerr("Graph is None. Unable to build dotted path message.")
+            return dotted_path
+
+        for i, node_id in enumerate(node_list):
+            node_str = str(node_id)
+            if node_str not in graph.nodes:
+                rospy.logwarn(f"Node {node_id} not found in graph. Skipping.")
+                continue
+
+            node_data = graph.nodes[node_str]
+            x = float(node_data.get('x', 0.0))
+            y = float(node_data.get('y', 0.0))
+
+            dp = DottedPose()
+            dp.pose.header.frame_id = "map"
+            dp.pose.header.stamp = rospy.Time.now()
+            dp.pose.pose.position.x = x
+            dp.pose.pose.position.y = y
+            dp.pose.pose.orientation.w = 1.0
+
+            if i > 0:
+                prev_node = node_list[i-1]
+                if graph.has_edge(str(prev_node), node_str):
+                    edge_data = graph.get_edge_data(str(prev_node), node_str)
+                    if 'dotted' in edge_data and str(edge_data['dotted']).lower() == 'true':
+                        dp.dotted = True
+                    else:
+                        dp.dotted = False
+                else:
+                    dp.dotted = False
+            else:
+                # First node, no incoming edge
+                dp.dotted = False
+
+            dotted_path.poses.append(dp)
+
+        return dotted_path
+
     def run(self):
         while not rospy.is_shutdown():
+            now = rospy.Time.now()
+
+            # Update standard Path header
             if self.global_path_msg:
-                current_time = rospy.Time.now()
-                self.global_path_msg.header.stamp = current_time
+                self.global_path_msg.header.stamp = now
                 for pose in self.global_path_msg.poses:
-                    pose.header.stamp = current_time
+                    pose.header.stamp = now
+
                 self.path_pub.publish(self.global_path_msg)
+
+            # Update PathWithDotted header
+            if self.dotted_path_msg:
+                self.dotted_path_msg.header.stamp = now
+                for dp in self.dotted_path_msg.poses:
+                    dp.pose.header.stamp = now
+
+                self.dotted_path_pub.publish(self.dotted_path_msg)
 
             self.rate.sleep()
 
