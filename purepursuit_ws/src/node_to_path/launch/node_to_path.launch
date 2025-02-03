@@ -1,0 +1,14 @@
+<launch>
+    <!-- Set parameters -->
+    <param name="graphml_file" value="$(find node_to_path)/config/Competition_track_graph.graphml"/>
+    <param name="key_nodes_file" value="$(find node_to_path)/config/global_path_key_nodes.yaml"/>
+    <param name="publish_rate" value="1.0"/>
+
+    <!-- Launch the Python node -->
+    <node pkg="node_to_path"
+          type="graphml_to_path_node.py"
+          name="graphml_to_path_node"
+          output="screen">
+    </node>
+
+</launch>
