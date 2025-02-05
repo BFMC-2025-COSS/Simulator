@@ -1,0 +1,14 @@
+<launch>
+    <!-- Set parameters -->
+    <param name="look_ahead_dist" value="0.068"/>
+    <param name="wheel_base" value="0.034"/>
+    <param name="desired_speed" value="20.0"/>
+
+    <!-- Launch the Python node -->
+    <node pkg="pure_pursuit"
+          type="pure_pursuit.py"
+          name="pure_pursuit"
+          output="screen">
+    </node>
+
+</launch>
