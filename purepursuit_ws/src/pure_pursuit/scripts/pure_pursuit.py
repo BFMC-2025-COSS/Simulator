@@ -4,6 +4,8 @@ import rospy
 
 from nav_msgs.msg import Path
 from std_msgs.msg import String
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 
 from utils.msg import localisation
 
@@ -27,6 +29,9 @@ class PurePursuit:
 
         # ROS Publishers
         self.command_pub = rospy.Publisher('/automobile/command', String, queue_size=1)
+        self.current_pos_pub = rospy.Publisher('/visualization/current_pos', Marker, queue_size=1)
+        self.look_ahead_pub = rospy.Publisher('/visualization/look_ahead', Marker, queue_size=1)
+        self.path_marker_pub = rospy.Publisher('/visualization/look_ahead_line', Marker, queue_size=1)
 
         # Internal variables
         self.path = []  # global path
@@ -45,6 +50,85 @@ class PurePursuit:
     def gps_callback(self, msg):
         self.current_pos = (msg.posA, msg.posB)
         self.current_yaw = self.normalize_angle(msg.rotA)
+
+    def visualize_current_position(self):
+        marker = Marker()
+        marker.header.frame_id = "map"  # Coordinate frame used in RViz
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "pure_pursuit"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+
+        marker.pose.position.x = self.current_pos[0]
+        marker.pose.position.y = self.current_pos[1]
+        marker.pose.position.z = 0.0
+
+        marker.scale.x = 0.1
+        marker.scale.y = 0.1
+        marker.scale.z = 0.1
+
+        marker.color.r = 1.0  # Red
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0  # Opaque
+
+        self.current_pos_pub.publish(marker)
+
+    def visualize_look_ahead_point(self, look_ahead_point):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "pure_pursuit"
+        marker.id = 1
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+
+        marker.pose.position.x = look_ahead_point[0]
+        marker.pose.position.y = look_ahead_point[1]
+        marker.pose.position.z = 0.0
+
+        marker.scale.x = 0.1
+        marker.scale.y = 0.1
+        marker.scale.z = 0.1
+
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0  # Blue
+        marker.color.a = 1.0  # Opaque
+
+        self.look_ahead_pub.publish(marker)
+
+    def visualize_look_ahead_line(self, look_ahead_point):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "pure_pursuit"
+        marker.id = 2
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        marker.scale.x = 0.05  # Line thickness
+
+        marker.color.r = 0.0
+        marker.color.g = 1.0  # Green
+        marker.color.b = 0.0
+        marker.color.a = 1.0  # Opaque
+
+        start_point = Point()
+        start_point.x = self.current_pos[0]
+        start_point.y = self.current_pos[1]
+        start_point.z = 0.0
+
+        end_point = Point()
+        end_point.x = look_ahead_point[0]
+        end_point.y = look_ahead_point[1]
+        end_point.z = 0.0
+
+        marker.points.append(start_point)
+        marker.points.append(end_point)
+
+        self.path_marker_pub.publish(marker)
 
     def normalize_angle(self, angle):
         while angle >= math.pi:
@@ -113,7 +197,12 @@ class PurePursuit:
         rospy.loginfo(f"Speed: {self.desired_speed:.2f}")
         rospy.loginfo(f"Steering Angle: {-1.0 * math.degrees(steering_angle):.2f}°")
 
-        # 4. publish cmd_vel
+        # 5. Visualization
+        self.visualize_current_position()
+        self.visualize_look_ahead_point(look_ahead_point)
+        self.visualize_look_ahead_line(look_ahead_point)
+
+        # 6. publish command
         command = {}
         command['action'] =  '1'
         command['speed'] = float(self.desired_speed / 100.0)
