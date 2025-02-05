@@ -30,9 +30,9 @@ class GraphMLToPathNode:
         rospy.loginfo(f"Reading key_nodes from: {self.key_nodes_file}")
 
         # Publisher for nav_msgs/Path
-        self.path_pub = rospy.Publisher('/global_path', Path, queue_size=1)
+        self.path_pub = rospy.Publisher('/global_path', Path, queue_size=1, latch=True)
         # Publisher for the custom PathWithDotted
-        self.dotted_path_pub = rospy.Publisher('/global_path_dotted', PathWithDotted, queue_size=1)
+        self.dotted_path_pub = rospy.Publisher('/global_path_dotted', PathWithDotted, queue_size=1, latch=True)
 
         # Load the GraphML file
         self.graph = self.load_graphml_file(self.graphml_file)
