@@ -5,9 +5,9 @@
     <param name="desired_speed" value="20.0"/>
 
     <!-- Launch the Python node -->
-    <node pkg="pure_pursuit"
-          type="pure_pursuit.py"
-          name="pure_pursuit"
+    <node pkg="control"
+          type="control.py"
+          name="control"
           output="screen">
     </node>
 
