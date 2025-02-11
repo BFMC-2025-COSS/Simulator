@@ -14,9 +14,9 @@ import json
 import os
 
 class PurePursuit:
-    def __init__(self):
-        self.look_ahead_dist = 0.068
-        self.wheel_base = 0.034
+    def __init__(self, look_ahead_dist, wheel_base):
+        self.look_ahead_dist = look_ahead_dist
+        self.wheel_base = wheel_base
 
         self.path = []  # global path
         self.current_pos = (0.0, 0.0)
@@ -252,7 +252,7 @@ class PurePursuit:
 
 if __name__ == '__main__':
     try:
-        pp = PurePursuit()
+        pp = PurePursuit(0.068, 0.034)
         pp.ros_init()
         pp.run()
     except rospy.ROSInterruptException:
