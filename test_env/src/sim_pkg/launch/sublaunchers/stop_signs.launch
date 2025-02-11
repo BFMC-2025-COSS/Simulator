@@ -7,9 +7,9 @@
       name  = "STOP_A"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/stop_sign/model.sdf -sdf -model STOP_A -x 2.103 -y -14.004 -z 0.079 -R 0 -P 0 -Y 0"/>
+      args  = "-file $(find models_pkg)/stop_sign/model.sdf -sdf -model STOP_A -x 3.376090 -y 7.367140 -z 0 -R 0 -P 0 -Y 3.13"/>
 
-  <node
+  <!-- <node
       name  = "STOP_C"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
@@ -49,6 +49,6 @@
       name  = "STOP_I"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/stop_sign/model.sdf -sdf -model STOP_I -x 1.423 -y -6.287 -z 0.078998 -R 0  -P 0  -Y  3.141592"/>
+      args  = "-file $(find models_pkg)/stop_sign/model.sdf -sdf -model STOP_I -x 1.423 -y -6.287 -z 0.078998 -R 0  -P 0  -Y  3.141592"/> -->
 
 </launch>

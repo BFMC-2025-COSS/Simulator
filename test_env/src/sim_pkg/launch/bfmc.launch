@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- Gazebo World Launch -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <!-- <arg name="world_name" value="$(find sim_pkg)/worlds/world_with_baha.world"/>  -->
+    <arg name="world_name" value="$(find sim_pkg)/worlds/world.world"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="debug" value="false"/>
+    <arg name="gui" value="true"/>
+  </include>
+
+  <!-- <node pkg="tf" type="static_transform_publisher" name="map_to_odom_broadcaster"
+        args="0 0 0 0 0 0 map odom 100" />
+  <node pkg="tf" type="static_transform_publisher" name="odom_to_base_link_broadcaster"
+      args="0 0 0 0 0 0 odom base_link 100" /> -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find models_pkg)/rcCar_assembly/model.urdf'"/>
+
+  <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher">
+    <param name="use_gui" value="true"/>
+  </node>
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" >
+    <param name="robot_description" command="$(find xacro)/xacro '$(find models_pkg)/rcCar_assembly/model.urdf'" />
+  </node>
+  
+  <!-- <node pkg="robot_localization" type="ekf_localization_node" name="ekf_localization">
+    <rosparam command="load" file="$(find sim_pkg)/config/ekf_localization.yaml"/> 
+  </node> -->
+
+  <node pkg="sim_pkg" type="delay.sh" args="1 sim_pkg car.launch" name="car" output="screen"/>
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg enter_highway_signs.launch" name="enter_highway_signs"  output="screen"/>
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg leave_highway_signs.launch" name="leave_highway_signs"  output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg prohibited_signs.launch"    name="prohibited_signs"     output="screen"/> -->
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg oneway_signs.launch"        name="oneway_signs"         output="screen"/> -->
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg parking_signs.launch"       name="parking_signs"        output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg pedestrian_objects.launch"  name="pedestrian_objects"   output="screen"/> -->
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg crosswalk_signs.launch"     name="crosswalk_signs"      output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg priority_signs.launch"      name="priority_signs"       output="screen"/> -->
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg roundabout_signs.launch"    name="roundabout_signs"     output="screen"/>
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg stop_signs.launch"          name="stop_signs"           output="screen"/>
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg obstacle_car.launch"        name="obstacle_car"         output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg members.launch"             name="members"              output="screen"/> -->
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg ramp.launch"                name="ramp"                 output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg roadblock.launch"           name="roadblock"            output="screen"/> -->
+  <node pkg="sim_pkg" type="delay.sh" args="5 sim_pkg traffic_lights.launch"      name="traffic_lights"       output="screen"/>
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="1 sim_pkg pedestrian_objects.launch"  name="pedestrian_objects"   output="screen"/> -->
+  <!-- <node pkg="sim_pkg" type="delay.sh" args="1 sim_pkg traffic_lights.launch"      name="traffic_lights"       output="screen"/> -->
+
+  <!-- <node name="launch_obstacle_detector" pkg="sim_pkg" type="launch_obstacle_detector.sh" output="screen"/> -->
+  <!-- <node name="rviz" pkg="sim_pkg" type="rviz.sh" output="screen"/> -->
+
+  
+</launch>
