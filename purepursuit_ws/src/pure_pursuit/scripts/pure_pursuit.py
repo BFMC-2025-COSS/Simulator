@@ -15,6 +15,15 @@ import os
 
 class PurePursuit:
     def __init__(self):
+        self.look_ahead_dist = 0.068
+        self.wheel_base = 0.034
+
+        self.path = []  # global path
+        self.current_pos = (0.0, 0.0)
+        self.current_yaw = 0.0  # radian
+        self.look_ahead_point = None
+    
+    def ros_init(self):
         # ROS Node
         rospy.init_node('pure_pursuit_node', anonymous=True)
 
@@ -34,9 +43,6 @@ class PurePursuit:
         self.path_marker_pub = rospy.Publisher('/visualization/look_ahead_line', Marker, queue_size=1)
 
         # Internal variables
-        self.path = []  # global path
-        self.current_pos = (0.0, 0.0)
-        self.current_yaw = 0.0  # radian
         self.control_timer = rospy.Timer(rospy.Duration(0.1), self.control_loop)
 
     def path_callback(self, msg):
@@ -73,9 +79,9 @@ class PurePursuit:
         marker.color.b = 0.0
         marker.color.a = 1.0  # Opaque
 
-        self.current_pos_pub.publish(marker)
+        return marker
 
-    def visualize_look_ahead_point(self, look_ahead_point):
+    def visualize_look_ahead_point(self):
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
@@ -84,8 +90,8 @@ class PurePursuit:
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
 
-        marker.pose.position.x = look_ahead_point[0]
-        marker.pose.position.y = look_ahead_point[1]
+        marker.pose.position.x = self.look_ahead_point[0]
+        marker.pose.position.y = self.look_ahead_point[1]
         marker.pose.position.z = 0.0
 
         marker.scale.x = 0.1
@@ -97,9 +103,9 @@ class PurePursuit:
         marker.color.b = 1.0  # Blue
         marker.color.a = 1.0  # Opaque
 
-        self.look_ahead_pub.publish(marker)
+        return marker
 
-    def visualize_look_ahead_line(self, look_ahead_point):
+    def visualize_look_ahead_line(self):
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
@@ -121,14 +127,14 @@ class PurePursuit:
         start_point.z = 0.0
 
         end_point = Point()
-        end_point.x = look_ahead_point[0]
-        end_point.y = look_ahead_point[1]
+        end_point.x = self.look_ahead_point[0]
+        end_point.y = self.look_ahead_point[1]
         end_point.z = 0.0
 
         marker.points.append(start_point)
         marker.points.append(end_point)
 
-        self.path_marker_pub.publish(marker)
+        return marker
 
     def normalize_angle(self, angle):
         while angle >= math.pi:
@@ -136,56 +142,78 @@ class PurePursuit:
         while angle <= math.pi:
             angle += 2.0 * math.pi
         return angle
-
-    def get_nearest_index(self, x, y):
+    
+    def get_nearest_index(self, path, x, y):
         # Find the nearest path index to (x, y)
-        if not self.path:
+        if not path:
             return None
-        dists = [(x - px)**2 + (y - py)**2 for (px, py) in self.path]
+        dists = [(x - px)**2 + (y - py)**2 for (px, py) in path]
         min_dist = min(dists)
         return dists.index(min_dist)
 
-    def get_look_ahead_point(self, x, y, nearest_index):
+    def get_look_ahead_point(self, path, x, y, nearest_index, look_ahead_dist):
         # Look ahead from nearest index until distance is >= look_ahead_dist
-        dist_sum = 0.0
-        for i in range(nearest_index + 1, len(self.path)):
-            px, py = self.path[i]
-            dist_sum = math.sqrt((px - x)**2 + (py - y)**2)
-            if dist_sum >= self.look_ahead_dist:
+        if not path:
+            return None
+        for i in range(nearest_index + 1, len(path)):
+            px, py = path[i]
+            dist_val = math.sqrt((px - x)**2 + (py - y)**2)
+            if dist_val >= look_ahead_dist:
                 return (px, py)
         return None
 
-    def compute_steering_angle(self, look_ahead_point):
+    def compute_steering_angle(self, path, current_pos, current_yaw, look_ahead_dist=None, wheel_base=None):
         # Use the vehicle yaw and the position of the look-ahead point
-        x, y = self.current_pos
+        if not path:
+            self.look_ahead_point = None
+            return 0.0
+        
+        if look_ahead_dist is None:
+            look_ahead_dist = self.look_ahead_dist
+        if wheel_base is None:
+            wheel_base = self.wheel_base
+
+        x, y = current_pos
+        nearest_index = self.get_nearest_index(path, x, y)
+        if nearest_index is None:
+            self.look_ahead_point = None
+            return 0.0
+
+        look_ahead_point = self.get_look_ahead_point(path, x, y, nearest_index, look_ahead_dist)
+        self.look_ahead_point = look_ahead_point
+        if not look_ahead_point:
+            return 0.0
+
         lx, ly = look_ahead_point
         angle_to_target = math.atan2(ly - y, lx - x)
-        heading_error = angle_to_target - self.current_yaw
-        # Normalize angle
+        heading_error = angle_to_target - current_yaw
         heading_error = math.atan2(math.sin(heading_error), math.cos(heading_error))
-        # Pure pursuit formula
-        return math.atan2(2.0 * self.wheel_base * math.sin(heading_error), self.look_ahead_dist)
+
+        steering_angle = math.atan2(
+            2.0 * wheel_base * math.sin(heading_error),
+            look_ahead_dist
+        )
+
+        return steering_angle
 
     def control_loop(self, event):
         if not self.path:
             return
 
-        # 1. find nearest point
+        # 1. compute steering angle
+        steering_angle = self.compute_steering_angle(
+            self.path,
+            self.current_pos,
+            self.current_yaw
+        )
+
+        # 2. Check look ahead point is valid
+        if not self.look_ahead_point:
+            return
+
+        # 3. ROS logging
+        lx, ly = self.look_ahead_point
         x, y = self.current_pos
-        nearest_index = self.get_nearest_index(x, y)
-        if nearest_index is None:
-            return
-
-        # 2. find lookahead point
-        look_ahead_point = self.get_look_ahead_point(x, y, nearest_index)
-        if not look_ahead_point:
-            return
-
-        # 3. compute steering
-        steering_angle = self.compute_steering_angle(look_ahead_point)
-
-        # 4. ROS logging
-        lx, ly = look_ahead_point
         diff_x = lx - x
         diff_y = ly - y
         distance_to_look_ahead = math.sqrt(diff_x**2 + diff_y**2)
@@ -197,12 +225,16 @@ class PurePursuit:
         rospy.loginfo(f"Speed: {self.desired_speed:.2f}")
         rospy.loginfo(f"Steering Angle: {-1.0 * math.degrees(steering_angle):.2f}°")
 
-        # 5. Visualization
-        self.visualize_current_position()
-        self.visualize_look_ahead_point(look_ahead_point)
-        self.visualize_look_ahead_line(look_ahead_point)
+        # 4. Visualization
+        current_position_marker = self.visualize_current_position()
+        look_ahead_point_marker = self.visualize_look_ahead_point()
+        look_ahead_line_marker = self.visualize_look_ahead_line()
 
-        # 6. publish command
+        self.current_pos_pub.publish(current_position_marker)
+        self.look_ahead_pub.publish(look_ahead_point_marker)
+        self.path_marker_pub.publish(look_ahead_line_marker)
+
+        # 5. publish command
         command = {}
         command['action'] =  '1'
         command['speed'] = float(self.desired_speed / 100.0)
@@ -221,6 +253,7 @@ class PurePursuit:
 if __name__ == '__main__':
     try:
         pp = PurePursuit()
+        pp.ros_init()
         pp.run()
     except rospy.ROSInterruptException:
         pass
