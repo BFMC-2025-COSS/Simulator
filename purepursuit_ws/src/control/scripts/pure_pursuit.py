@@ -28,8 +28,8 @@ class PurePursuit:
         rospy.init_node('pure_pursuit_node', anonymous=True)
 
         # ROS Parameters
-        self.look_ahead_dist = rospy.get_param('~look_ahead_dist', 0.068)
-        self.wheel_base = rospy.get_param('~wheel_base', 0.034)
+        self.look_ahead_dist = rospy.get_param('~look_ahead_dist', 0.38)
+        self.wheel_base = rospy.get_param('~wheel_base', 0.26)
         self.desired_speed = rospy.get_param('~desired_speed', 20.0)
 
         # ROS Subscribers
