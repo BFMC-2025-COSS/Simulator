@@ -46,13 +46,17 @@ class PurePursuit:
         self.control_timer = rospy.Timer(rospy.Duration(0.1), self.control_loop)
 
     def path_callback(self, msg):
+        # Convert nav_msgs/Path to a list of (x, y)
+        self.path = []
+        for pose_stamped in msg.poses:
+            x = pose_stamped.pose.position.x
+            y = pose_stamped.pose.position.y
+            self.path.append((x, y))
+
+    def gps_callback(self, msg):
         # # 차량 중심 기준
-        # # Convert nav_msgs/Path to a list of (x, y)
-        # self.path = []
-        # for pose_stamped in msg.poses:
-        #     x = pose_stamped.pose.position.x
-        #     y = pose_stamped.pose.position.y
-        #     self.path.append((x, y))
+        # self.current_pos = (msg.posA, msg.posB)
+        # self.current_yaw = self.normalize_angle(msg.rotA)
 
         # 차량 후륜 기준
         x_center, y_center = msg.posA, msg.posB
@@ -63,10 +67,6 @@ class PurePursuit:
 
         self.current_pos = (x_rear, y_rear)
         self.current_yaw = theta
-
-    def gps_callback(self, msg):
-        self.current_pos = (msg.posA, msg.posB)
-        self.current_yaw = self.normalize_angle(msg.rotA)
 
     def visualize_current_position(self):
         marker = Marker()
