@@ -33,6 +33,7 @@ from pynput import keyboard
 
 from RcBrainThread import RcBrainThread
 from std_msgs.msg import String
+from std_msgs.msg import Float64
 
 import rospy
 
@@ -51,9 +52,11 @@ class RemoteControlTransmitterProcess():
         
         self.rcBrain   =  RcBrainThread()   
         
-        rospy.init_node('EXAMPLEnode', anonymous=False)     
+        rospy.init_node('EXAMPLEnode', anonymous=True)     
         self.publisher = rospy.Publisher('/automobile/command', String, queue_size=1)
-
+        self.speed_pub = rospy.Publisher('/rear_wheel_speed', Float64, queue_size=10)
+        self.steer_pub = rospy.Publisher('/steering_angle', Float64, queue_size=10)
+        self.timer = rospy.Timer(rospy.Duration(0.1), self.publish_data)
     # ===================================== RUN ==========================================
     def run(self):
         """Apply initializing methods and start the threads. 
@@ -113,7 +116,10 @@ class RemoteControlTransmitterProcess():
 	
             command = json.dumps(command)
             self.publisher.publish(command)  
-            
+
+    def publish_data(self, event=None):
+        self.speed_pub.publish(Float64(self.rcBrain.speed))
+        self.steer_pub.publish(Float64(-self.rcBrain.steerAngle))
 if __name__ == '__main__':
     try:
         nod = RemoteControlTransmitterProcess()

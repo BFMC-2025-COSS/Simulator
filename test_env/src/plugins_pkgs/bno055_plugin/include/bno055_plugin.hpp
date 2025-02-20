@@ -1,37 +1,40 @@
 #pragma once
 #include <gazebo/gazebo.hh>
 #include <gazebo/common/Plugin.hh>
-#include <gazebo/common/common.hh>
 #include <gazebo/physics/physics.hh>
-
 #include "ros/ros.h"
 #include "utils/IMU.h"
-
 
 namespace gazebo
 {
     namespace bno055
-    {   
-        class BNO055: public ModelPlugin
-    	{
-        private: 
-            physics::ModelPtr                   m_model;
-            ros::NodeHandlePtr		  nh;
-            ros::Timer				  timer;
+    {
+        class BNO055 : public ModelPlugin
+        {
+        public:
+            BNO055();
+            virtual void Load(physics::ModelPtr, sdf::ElementPtr);
+            void OnUpdate();
 
-            /** ----------------------------------For ROS integration----------------------------------------------------**/
-            // A node use for ROS transport
-            std::unique_ptr<ros::NodeHandle>    m_ros_node;
+        private:
+            // Gazebo 관련 멤버 변수
+            physics::ModelPtr m_model;
 
-            // A ROS publisher
-            ros::Publisher                      m_pubBNO;
-            
-            utils::IMU                  m_bno055_pose;
+            // ROS 관련 멤버 변수
+            boost::shared_ptr<ros::NodeHandle> nh;
+            ros::Publisher m_pubBNO;
 
-        // Default constructor
-        public: BNO055();
-        public: void Load(physics::ModelPtr, sdf::ElementPtr);
-        public: void OnUpdate();        
+            // Gazebo의 업데이트 이벤트 연결
+            event::ConnectionPtr update_connection;
+
+            // IMU 관련 데이터 처리
+            utils::IMU m_bno055_pose;
+
+            // 바이어스 및 필터 변수
+            double acc_bias_x, acc_bias_y, acc_bias_z;
+            double gyro_bias_x, gyro_bias_y, gyro_bias_z;
+            double previous_acc_x, previous_acc_y, previous_acc_z;
+            double alpha;
         };
-    };    
-};
+    }  // namespace bno055
+}  // namespace gazebo

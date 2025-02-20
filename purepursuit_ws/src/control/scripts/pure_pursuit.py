@@ -2,12 +2,12 @@
 
 import rospy
 
-from nav_msgs.msg import Path
-from std_msgs.msg import String
+from nav_msgs.msg import Path, Odometry
+from std_msgs.msg import String,Float64
 from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Quaternion
 
-from utils.msg import localisation
+# from utils.msg import localisation
 
 import math
 import json
@@ -22,6 +22,7 @@ class PurePursuit:
         self.current_pos = (0.0, 0.0)
         self.current_yaw = 0.0  # radian
         self.look_ahead_point = None
+        self.desired_speed=0.2
     
     def ros_init(self):
         # ROS Node
@@ -34,14 +35,14 @@ class PurePursuit:
 
         # ROS Subscribers
         self.path_sub = rospy.Subscriber('/global_path', Path, self.path_callback)
-        self.gps_sub = rospy.Subscriber('/automobile/localisation', localisation, self.gps_callback)
-
+        # self.gps_sub = rospy.Subscriber('/automobile/localisation', localisation, self.gps_callback)
+        self.odom_sub = rospy.Subscriber('/odom',Odometry,self.odom_callback)
         # ROS Publishers
         self.command_pub = rospy.Publisher('/automobile/command', String, queue_size=1)
         self.current_pos_pub = rospy.Publisher('/visualization/current_pos', Marker, queue_size=1)
         self.look_ahead_pub = rospy.Publisher('/visualization/look_ahead', Marker, queue_size=1)
         self.path_marker_pub = rospy.Publisher('/visualization/look_ahead_line', Marker, queue_size=1)
-
+        self.speed_pub = rospy.Publisher('/pp/speed',Float64,queue_size=1)
         # Internal variables
         self.control_timer = rospy.Timer(rospy.Duration(0.1), self.control_loop)
 
@@ -53,6 +54,19 @@ class PurePursuit:
             y = pose_stamped.pose.position.y
             self.path.append((x, y))
 
+    def odom_callback(self, msg):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+
+        self.current_pos = (x, y)
+        self.current_yaw = yaw
+
+    def quaternion_to_yaw(self, q: Quaternion):
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+    
     def gps_callback(self, msg):
         # # 차량 중심 기준
         # self.current_pos = (msg.posA, msg.posB)
@@ -244,6 +258,7 @@ class PurePursuit:
         self.current_pos_pub.publish(current_position_marker)
         self.look_ahead_pub.publish(look_ahead_point_marker)
         self.path_marker_pub.publish(look_ahead_line_marker)
+        
 
         # 5. publish command
         command = {}
@@ -251,7 +266,7 @@ class PurePursuit:
         command['speed'] = float(self.desired_speed / 100.0)
         command = json.dumps(command)
         self.command_pub.publish(command)
-
+        self.speed_pub.publish(Float64(self.desired_speed / 100.0)) 
         command = {}
         command['action'] = '2'
         command['steerAngle'] = float(-1.0 * math.degrees(steering_angle))
