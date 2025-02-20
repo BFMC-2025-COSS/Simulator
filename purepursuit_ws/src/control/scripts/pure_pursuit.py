@@ -46,12 +46,23 @@ class PurePursuit:
         self.control_timer = rospy.Timer(rospy.Duration(0.1), self.control_loop)
 
     def path_callback(self, msg):
-        # Convert nav_msgs/Path to a list of (x, y)
-        self.path = []
-        for pose_stamped in msg.poses:
-            x = pose_stamped.pose.position.x
-            y = pose_stamped.pose.position.y
-            self.path.append((x, y))
+        # # 차량 중심 기준
+        # # Convert nav_msgs/Path to a list of (x, y)
+        # self.path = []
+        # for pose_stamped in msg.poses:
+        #     x = pose_stamped.pose.position.x
+        #     y = pose_stamped.pose.position.y
+        #     self.path.append((x, y))
+
+        # 차량 후륜 기준
+        x_center, y_center = msg.posA, msg.posB
+        theta = self.normalize_angle(msg.rotA)
+
+        x_rear = x_center - (self.wheel_base / 2) * math.cos(theta)
+        y_rear = y_center - (self.wheel_base / 2) * math.sin(theta)
+
+        self.current_pos = (x_rear, y_rear)
+        self.current_yaw = theta
 
     def gps_callback(self, msg):
         self.current_pos = (msg.posA, msg.posB)
@@ -155,7 +166,7 @@ class PurePursuit:
         # Look ahead from nearest index until distance is >= look_ahead_dist
         if not path:
             return None
-        for i in range(nearest_index + 1, len(path)):
+        for i in range(nearest_index, len(path)):
             px, py = path[i]
             dist_val = math.sqrt((px - x)**2 + (py - y)**2)
             if dist_val >= look_ahead_dist:
