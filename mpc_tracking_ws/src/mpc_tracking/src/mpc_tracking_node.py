@@ -4,11 +4,10 @@ import math
 import numpy as np
 import json
 import casadi as ca
-
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Imu
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 from utils.msg import localisation
 
 def quaternion_to_yaw(qx, qy, qz, qw):
@@ -16,357 +15,349 @@ def quaternion_to_yaw(qx, qy, qz, qw):
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
     return math.atan2(siny_cosp, cosy_cosp)
 
-class State:
-    """
-    Holds the vehicle state: x, y, yaw
-    """
+# ------------------ MPC Controller ------------------
+class NonlinearMPCController:
+    def __init__(self, dt=0.25, horizon=8, wheelbase=0.26):
+        self.dt = dt
+        self.T = horizon
+        self.wb = wheelbase
+        self.scenario = 'driving'
+        self.set_scenario(self.scenario)
+        self.nx = 3  # (x, y, yaw)
+        self.nu = 2  # (v, steer)
+
+    def set_scenario(self, scenario):
+        self.scenario = scenario
+        if scenario == "parking":
+            rospy.loginfo("[MPC] => parking param set")
+            self.T = 12  # 예측 지평선 증가
+            self.Qx = 40.0  # x 오차 가중치 증가
+            self.Qy = 70.0  # y 오차 가중치 더 크게 설정
+            self.Qyaw = 2  # yaw 가중치는 적당히
+            self.Rv = 0.005
+            self.Rsteer = 0.005
+            self.Rdv = 0.001
+            self.Rdsteer = 0.001
+            self.v_min = -0.25
+            self.v_max = 0.2
+            self.max_steer = math.radians(25.0)
+            self.min_steer = -self.max_steer
+        else:
+            rospy.loginfo("[MPC] => driving param set")
+            self.T = 12
+            self.Qx = 700.0
+            self.Qy = 700.0
+            self.Qyaw = 500.0
+            self.Rv = 0.01
+            self.Rsteer = 0.01
+            self.Rdv = 0.005
+            self.Rdsteer = 0.005
+            self.v_min = -0.2
+            self.v_max = 0.3
+            self.max_steer = math.radians(25.0)
+            self.min_steer = -self.max_steer
+
+    def solve_mpc(self, x0, xref):
+        T = self.T
+        dt = self.dt
+        wb = self.wb
+        n_vars = (self.nx)*(T+1) + (self.nu)*T
+        opt_x = ca.SX.sym('opt_x', n_vars)
+
+        def sidx(k): return self.nx*k
+        def cidx(k): return self.nx*(T+1) + self.nu*k
+
+        obj = 0.0
+        g = []
+        lbg = []
+        ubg = []
+
+        g += [opt_x[sidx(0)+0] - x0[0], opt_x[sidx(0)+1] - x0[1], opt_x[sidx(0)+2] - x0[2]]
+        lbg += [0.0, 0.0, 0.0]
+        ubg += [0.0, 0.0, 0.0]
+
+        def f(st, con):
+            x, y, yaw = st[0], st[1], st[2]
+            v, steer = con[0], con[1]
+            dx = v*ca.cos(yaw)
+            dy = v*ca.sin(yaw)
+            dyaw = (v/wb)*steer
+            return ca.vertcat(dx, dy, dyaw)
+
+        for k in range(T):
+            st_k = opt_x[sidx(k):sidx(k)+3]
+            con_k = opt_x[cidx(k):cidx(k)+2]
+            st_next = opt_x[sidx(k+1): sidx(k+1)+3]
+            k1 = f(st_k, con_k)
+            k2 = f(st_k+(dt/2)*k1, con_k)
+            k3 = f(st_k+(dt/2)*k2, con_k)
+            k4 = f(st_k+dt*k3, con_k)
+            st_rk4 = st_k+(dt/6)*(k1+2*k2+2*k3+k4)
+            g += [st_next - st_rk4]
+            lbg += [0.0, 0.0, 0.0]
+            ubg += [0.0, 0.0, 0.0]
+
+        for k in range(T+1):
+            xk, yk, yawk = opt_x[sidx(k)+0], opt_x[sidx(k)+1], opt_x[sidx(k)+2]
+            xr, yr, yr_yaw = xref[0, k], xref[1, k], xref[2, k]
+            obj += self.Qx*(xk - xr)**2 + self.Qy*(yk - yr)**2 + self.Qyaw*(yawk - yr_yaw)**2
+
+        for k in range(T):
+            vk, steer_k = opt_x[cidx(k)+0], opt_x[cidx(k)+1]
+            obj += self.Rv*(vk**2) + self.Rsteer*(steer_k**2)
+            if k < T-1:
+                v_next, st_next = opt_x[cidx(k+1)+0], opt_x[cidx(k+1)+1]
+                obj += self.Rdv*((v_next - vk)**2) + self.Rdsteer*((st_next - steer_k)**2)
+
+        lbx = [-1e6]*((T+1)*self.nx) + [self.v_min, self.min_steer]*T
+        ubx = [1e6]*((T+1)*self.nx) + [self.v_max, self.max_steer]*T
+
+        nlp = {'f': obj, 'x': opt_x, 'g': ca.vertcat(*g)}
+        solver = ca.nlpsol('solver', 'ipopt', nlp, {
+            'ipopt': {'max_iter': 200, 'acceptable_tol': 1e-6, 'acceptable_obj_change_tol': 1e-6}
+        })
+
+        x_init = []
+        for k in range(T+1):
+            alpha = k/float(T+1)
+            xg = x0[0]*(1-alpha) + xref[0, -1]*alpha
+            yg = x0[1]*(1-alpha) + xref[1, -1]*alpha
+            yawg = x0[2]*(1-alpha) + xref[2, -1]*alpha
+            x_init += [xg, yg, yawg]
+        x_init += [0.0, 0.0]*T
+
+        sol = solver(x0=x_init, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+        if sol['f'].full()[0] > 1e6 or 'Solve_Succeeded' not in solver.stats()['return_status']:
+            rospy.logwarn(f"[MPC] solver fail: {solver.stats()['return_status']}")
+            return None, None
+
+        solx = sol['x'].full().flatten()
+        all_controls = solx[self.nx*(T+1): ].reshape((T, self.nu)).T
+        return (all_controls[0, :], all_controls[1, :]), None
+
+# ------------------ ROS Node ------------------
+class StateStruct:
     def __init__(self, x=0.0, y=0.0, yaw=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
 
-class NonlinearMPCController:
-    """
-    Kinematic Bicycle Model with 2 inputs: [v, steer].
-    - State = [x, y, yaw]
-    - Control = [v, steer]
-    - Solver: CasADi + IPOPT
-    """
-    def __init__(self, dt=0.2, horizon=5, wheelbase=0.26):
-        self.dt = dt
-        self.T = horizon
-        self.wb = wheelbase
-
-        # --- 비용 가중치(예시값) ---
-        self.Qx = 700.0
-        self.Qy = 700.0
-        self.Qyaw = 500.0
-
-        # 제어 입력 비용 가중치
-        self.Rv = 0.01       # 속도 입력에 대한 비용
-        self.Rsteer = 0.01   # 조향 입력에 대한 비용
-
-        # 제어 변화율 비용 가중치
-        self.Rdv = 0.005
-        self.Rdsteer = 0.005
-
-        # 최대/최소 속도
-        self.v_min = -0.1
-        self.v_max = 0.3
-
-        # 최대 스티어링(±25 deg)
-        self.max_steer = math.radians(25.0)
-        self.min_steer = -self.max_steer
-
-        # CasADi Symbolic Setup
-        self.nx = 3  # (x, y, yaw)
-        self.nu = 2  # (v, steer)
-
-    def solve_mpc(self, x0, xref):
-        """
-        x0: 초기 상태 [x, y, yaw]
-        xref: shape=(3, T+1), MPC horizon 동안 추종하고자 하는 레퍼런스 (x, y, yaw)
-        return: (v_array, steer_array), state_array
-        """
-
-        T = self.T
-        dt = self.dt
-        wb = self.wb
-
-        # 1) 최적화 변수: 상태(T+1) + 제어(T)
-        #    상태 = 3 * (T+1), 제어 = 2 * T
-        n_vars = (self.nx)*(T+1) + (self.nu)*T
-        opt_x = ca.SX.sym('opt_x', n_vars)
-
-        # Helper index
-        def state_idx(k):
-            return self.nx * k
-
-        def control_idx(k):
-            return self.nx*(T+1) + self.nu*k
-
-        # 2) 비용함수 초기화
-        obj = 0.0
-
-        # 3) 제약조건 모음
-        g = []
-        lbg = []
-        ubg = []
-
-        # 3.1) 초기 상태 고정: (x(0), y(0), yaw(0)) = x0
-        x_init = opt_x[state_idx(0) + 0]
-        y_init = opt_x[state_idx(0) + 1]
-        yaw_init = opt_x[state_idx(0) + 2]
-
-        g += [x_init - x0[0], y_init - x0[1], yaw_init - x0[2]]
-        lbg += [0.0, 0.0, 0.0]
-        ubg += [0.0, 0.0, 0.0]
-
-        # 동역학 함수 정의
-        def f(st, con):
-            """
-            st = [x, y, yaw]
-            con = [v, steer]
-            """
-            x, y, yaw = st[0], st[1], st[2]
-            v, steer = con[0], con[1]
-            dx = v * ca.cos(yaw)
-            dy = v * ca.sin(yaw)
-            dyaw = (v / wb) * steer  # tan(steer) 대신 steer
-            return ca.vertcat(dx, dy, dyaw)
-
-        # 3.2) RK4로 다음 상태 제약
-        for k in range(T):
-            # 현재 상태
-            st_k = opt_x[state_idx(k): state_idx(k)+3]
-            # 제어
-            con_k = opt_x[control_idx(k): control_idx(k)+2]
-            # 다음 상태
-            st_next = opt_x[state_idx(k+1): state_idx(k+1)+3]
-
-            # RK4
-            k1 = f(st_k, con_k)
-            k2 = f(st_k + (dt/2)*k1, con_k)
-            k3 = f(st_k + (dt/2)*k2, con_k)
-            k4 = f(st_k + dt*k3, con_k)
-            st_next_RK4 = st_k + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
-
-            # 제약: st_next = st_next_RK4
-            g += [st_next - st_next_RK4]
-            lbg += [0.0, 0.0, 0.0]
-            ubg += [0.0, 0.0, 0.0]
-
-        # 4) 비용함수 작성
-        #    (xref - xk), (uref - uk) 등
-        for k in range(T+1):
-            xk = opt_x[state_idx(k) + 0]
-            yk = opt_x[state_idx(k) + 1]
-            yawk = opt_x[state_idx(k) + 2]
-
-            xr = xref[0, k]
-            yr = xref[1, k]
-            yr_yaw = xref[2, k]
-
-            # 위치/각도 오차 비용
-            obj += self.Qx * (xk - xr)**2
-            obj += self.Qy * (yk - yr)**2
-            obj += self.Qyaw * (yawk - yr_yaw)**2
-
-        # 제어 입력 비용 + 제어 변화율 비용
-        for k in range(T):
-            vk = opt_x[control_idx(k) + 0]
-            steer_k = opt_x[control_idx(k) + 1]
-            # 입력 자체 비용
-            obj += self.Rv * (vk**2)
-            obj += self.Rsteer * (steer_k**2)
-
-            if k < T-1:
-                v_next = opt_x[control_idx(k+1) + 0]
-                steer_next = opt_x[control_idx(k+1) + 1]
-                obj += self.Rdv * ((v_next - vk)**2)
-                obj += self.Rdsteer * ((steer_next - steer_k)**2)
-
-        # 5) bound 생성
-        #   상태 (x, y, yaw)는 제한 없이 -inf ~ inf
-        #   제어 (v, steer)는 하단/상단 제한
-        lbx = []
-        ubx = []
-        # 상태 (T+1)
-        for k in range(T+1):
-            # x, y
-            lbx += [-1.0e6, -1.0e6]
-            ubx += [1.0e6, 1.0e6]
-            # yaw
-            lbx += [-1.0e6]
-            ubx += [1.0e6]
-
-        # 제어 (T)
-        for k in range(T):
-            # v
-            lbx += [self.v_min]
-            ubx += [self.v_max]
-            # steer
-            lbx += [self.min_steer]
-            ubx += [self.max_steer]
-
-        # 6) NLP 설정
-        nlp_dict = {
-            'f': obj,
-            'x': opt_x,
-            'g': ca.vertcat(*g)
-        }
-
-        solver_opts = {
-            'ipopt': {
-                'max_iter': 200,
-                'acceptable_tol': 1e-6,
-                'acceptable_obj_change_tol': 1e-6,
-                # 'print_level': 0
-            }
-            # 'print_time': False
-        }
-        solver = ca.nlpsol('solver', 'ipopt', nlp_dict, solver_opts)
-
-        # 7) 초기 추정값
-        x_init_guess = []
-        for k in range(T+1):
-            alpha = k / float(T+1)
-            xg = x0[0] * (1-alpha) + xref[0,-1] * alpha
-            yg = x0[1] * (1-alpha) + xref[1,-1] * alpha
-            ygaw = x0[2] * (1-alpha) + xref[2,-1] * alpha
-            x_init_guess += [xg, yg, ygaw]
-
-        for k in range(T):
-            # v, steer 각각 0으로 시작
-            x_init_guess += [0.0, 0.0]
-
-        # 8) Solve
-        sol = solver(
-            x0=x_init_guess,
-            lbx=lbx, ubx=ubx,
-            lbg=lbg, ubg=ubg
-        )
-
-        if solver.stats()['return_status'] not in ['Solve_Succeeded', 'Optimal_Solution_Found']:
-            rospy.logwarn("IPOPT failed. status=" + solver.stats()['return_status'])
-            return None, None
-
-        sol_x = sol['x'].full().flatten()
-
-        # 9) 결과 파싱
-        #    제어: v_array, steer_array
-        #    상태: state_array
-        all_states = sol_x[: self.nx*(T+1)].reshape((T+1, self.nx)).T  # (3, T+1)
-        all_controls = sol_x[self.nx*(T+1): ].reshape((T, self.nu)).T  # (2, T)
-
-        # [v1, v2, ..., vT], [steer1, steer2, ..., steerT]
-        v_traj = all_controls[0, :]
-        steer_traj = all_controls[1, :]
-
-        return (v_traj, steer_traj), all_states
-
-
-# ------------------------- ROS Node (예시) -------------------------
 class MPCNode:
     def __init__(self):
         rospy.init_node("mpc_lateral_node", anonymous=True)
-
-        # horizon, dt 등은 상황 맞춰 조정
-        self.mpc = NonlinearMPCController(dt=0.25, horizon=4, wheelbase=0.26)
-
+        self.mpc = NonlinearMPCController(dt=0.25, horizon=10, wheelbase=0.26)
+        
+        self.in_parking_mode = False
+        self.parking_path = []
+        self.parking_idx = 0
+        
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
         self.loc_ok = False
         self.yaw_ok = False
-
+        
         self.global_path = []
-        self.path_ok = False
-        self.target_i = 0
-
+        self.global_path_ok = False
+        self.global_idx = 0
+        
+        self.graph_nodes = {
+            "232": (10.82, 0.92),
+            "901": (10.04, 0.54),
+            "233": (10.5, 0.92),
+        }
+        self.graph_edges = {
+            "232": ["901"],
+            "901": ["232", "233"],
+            "233": ["901"]
+        }
+        
         self.path_sub = rospy.Subscriber("/global_path", Path, self.path_callback, queue_size=1)
         self.loc_sub = rospy.Subscriber("/automobile/localisation", localisation, self.loc_callback, queue_size=1)
         self.imu_sub = rospy.Subscriber("/automobile/IMU", Imu, self.imu_callback, queue_size=1)
-
+        self.park_sub = rospy.Subscriber("/parking_signal", Bool, self.park_signal_cb, queue_size=1)
         self.cmd_pub = rospy.Publisher("/automobile/command", String, queue_size=10)
+        self.parking_path_pub = rospy.Publisher("/parking_path", Path, queue_size=1)
         self.xref_pub = rospy.Publisher("/mpc_xref", Path, queue_size=1)
-
         self.timer = rospy.Timer(rospy.Duration(0.05), self.control_loop)
+
+    def park_signal_cb(self, msg: Bool):
+        self.parking_signal = msg.data
+        rospy.loginfo(f"[Parking] => parking signal {'ON' if msg.data else 'OFF'}")
 
     def path_callback(self, msg: Path):
         self.global_path = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
-        self.path_ok = (len(self.global_path) > 2)
+        self.global_path_ok = len(self.global_path) > 2
 
     def loc_callback(self, msg: localisation):
         x_c, y_c = msg.posA, msg.posB
         theta = self.yaw
-        # 차량의 rear-axle 기준 좌표로 변환 (필요 시)
-        x_rear = x_c - (0.26 * 0.5) * math.cos(theta)
-        y_rear = y_c - (0.26 * 0.5) * math.sin(theta)
-        self.x = x_rear
-        self.y = y_rear
+        wb = 0.26
+        self.x = x_c - 0.5*wb*math.cos(theta)
+        self.y = y_c - 0.5*wb*math.sin(theta)
         self.loc_ok = True
 
-    def imu_callback(self, imu_msg: Imu):
-        q = imu_msg.orientation
+    def imu_callback(self, msg: Imu):
+        q = msg.orientation
         self.yaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
         self.yaw_ok = True
 
+    def build_parking_path(self, start_node, end_node):
+        """주차 경로 생성 후 Bezier 곡선 적용"""
+        import heapq
+        dist = {n: float('inf') for n in self.graph_nodes.keys()}
+        prev = {n: None for n in self.graph_nodes.keys()}
+        dist[start_node] = 0.0
+        pq = [(0.0, start_node)]
+        while pq:
+            cur_dist, cur_node = heapq.heappop(pq)
+            if cur_dist > dist[cur_node]:
+                continue
+            if cur_node == end_node:
+                break
+            if cur_node not in self.graph_edges:
+                continue
+            neighbors = self.graph_edges[cur_node]
+            for nxt in neighbors:
+                cost = math.hypot(self.graph_nodes[nxt][0] - self.graph_nodes[cur_node][0],
+                                self.graph_nodes[nxt][1] - self.graph_nodes[cur_node][1])
+                alt = dist[cur_node] + cost
+                if alt < dist[nxt]:
+                    dist[nxt] = alt
+                    prev[nxt] = cur_node
+                    heapq.heappush(pq, (alt, nxt))
+        path_nodes = []
+        n = end_node
+        while n is not None:
+            path_nodes.append(n)
+            n = prev[n]
+        path_nodes.reverse()
+        raw_path = [self.graph_nodes[n] for n in path_nodes]
+        return self.apply_bezier(raw_path)  # Bezier 곡선으로 부드럽게 보정
+    def apply_bezier(self, path_coords):
+        """주차 경로를 Bezier 곡선으로 부드럽게 보정"""
+        if len(path_coords) < 3:
+            return path_coords
+        new_path = []
+        for i in range(0, len(path_coords) - 2, 1):  # 각 구간마다 제어점 활용
+            p0 = path_coords[i]
+            p1 = path_coords[i + 1]
+            p2 = path_coords[i + 2] if i + 2 < len(path_coords) else path_coords[-1]
+            for t in np.linspace(0, 1, 10):  # 각 구간에 10개의 보간 점 추가
+                B_x = (1-t)**2 * p0[0] + 2*(1-t)*t * p1[0] + t**2 * p2[0]
+                B_y = (1-t)**2 * p0[1] + 2*(1-t)*t * p1[1] + t**2 * p2[1]
+                new_path.append((B_x, B_y))
+        new_path.append(path_coords[-1])  # 마지막 점 유지
+        return new_path
+    def build_xref(self, path_xy, near_i, st, is_parking=False):
+        T = self.mpc.T
+        xref = np.zeros((3, T+1))
+        n = len(path_xy)
+        for i in range(T+1):
+            idx = min(near_i + i, n-1)
+            xref[0, i] = path_xy[idx][0]
+            xref[1, i] = path_xy[idx][1]
+            if i == 0:
+                xref[2, i] = st.yaw
+            else:
+                if is_parking and idx == n-1:
+                    xref[2, i] = 0.0  # 마지막 지점에서만 yaw=0
+                else:
+                    dx = path_xy[idx][0] - path_xy[idx-1][0]
+                    dy = path_xy[idx][1] - path_xy[idx-1][1]
+                    prev_yaw = xref[2, i-1]
+                    new_yaw = math.atan2(dy, dx)
+                    xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw), math.cos(new_yaw - prev_yaw))
+        return xref
+
     def control_loop(self, event):
-        if not (self.path_ok and self.loc_ok and self.yaw_ok):
-            return
-        if len(self.global_path) < 2:
+        if not (self.loc_ok and self.yaw_ok) or not self.global_path_ok:
             return
 
-        st = State(self.x, self.y, self.yaw)
-        near_i = self.get_nearest_idx(st.x, st.y, self.global_path, self.target_i)
-        self.target_i = near_i
+        st = StateStruct(self.x, self.y, self.yaw)
 
-        xref = self.build_xref(near_i, st)
-        self.visualize_xref(xref)
+        if not self.in_parking_mode:
+            near_i = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
+            self.global_idx = near_i
+            xref = self.build_xref(self.global_path, near_i, st, is_parking=False)
+            self.visualize_xref(xref)
 
-        x0 = np.array([st.x, st.y, st.yaw])
-        (v_traj, steer_traj), state_traj = self.mpc.solve_mpc(x0, xref)
-        if v_traj is None:
-            rospy.logwarn("MPC failed, use safe command")
-            v_cmd = 0.0
-            steer_cmd = 0.0
+            self.mpc.set_scenario("driving")
+            x0 = np.array([st.x, st.y, st.yaw])
+            (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
+            v_cmd = v_traj[0] if v_traj is not None else 0.0
+            s_cmd = steer_traj[0] if steer_traj is not None else 0.0
+
+            dist_232 = math.hypot(st.x - 10.84, st.y - 0.92)
+            if dist_232 < 0.2 and getattr(self, 'parking_signal', False):
+                rospy.loginfo("[Parking] => Switch to parking mode: 232->901")
+                self.in_parking_mode = True
+                self.parking_path = self.build_parking_path('232', '901')
+                self.parking_idx = 0
+                self.visualize_parking_path(self.parking_path)
+
         else:
-            # 첫 시점의 해
-            v_cmd = v_traj[0]
-            steer_cmd = steer_traj[0]
+            if len(self.parking_path) < 2:
+                rospy.logwarn("[Parking] no valid path => back to driving")
+                self.in_parking_mode = False
+                return
 
-        # speed_cmd, steer_deg
-        steer_deg = math.degrees(steer_cmd)
-        rospy.loginfo(f"[MPC] => v={v_cmd:.2f} m/s, steer={steer_cmd:.2f} rad => {steer_deg:.2f} deg")
+            near_i = self.get_nearest_idx(st.x, st.y, self.parking_path, self.parking_idx)
+            self.parking_idx = near_i
+            xref = self.build_xref(self.parking_path, near_i, st, is_parking=True)
+            self.visualize_xref(xref)
 
-        # 아래 예시는 command가 JSON 형태라는 가정 하에 작성
+            self.mpc.set_scenario("parking")
+            x0 = np.array([st.x, st.y, st.yaw])
+            (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
+            v_cmd = v_traj[0] if v_traj is not None else 0.0
+            s_cmd = steer_traj[0] if steer_traj is not None else 0.0
+
+            last_x, last_y = self.parking_path[-1]
+            dist_end = math.hypot(st.x - last_x, st.y - last_y)
+            yaw_error = abs(st.yaw)
+            rospy.loginfo(f"[Parking] dist_end={dist_end:.3f}, yaw_error={math.degrees(yaw_error):.2f} deg")
+            if dist_end < 0.15 and yaw_error < math.radians(15):
+                rospy.loginfo("[Parking] => park complete => back to driving")
+                self.in_parking_mode = False
+                self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
+
+        steer_deg = math.degrees(s_cmd)
+        rospy.loginfo(f"[MPC] parking={self.in_parking_mode}, v={v_cmd:.2f}, steer={s_cmd:.2f} rad => {steer_deg:.2f} deg")
         cmd_dict_1 = {'action': '1', 'speed': float(v_cmd)}
         self.cmd_pub.publish(json.dumps(cmd_dict_1))
         cmd_dict_2 = {'action': '2', 'steerAngle': float(-steer_deg)}
         self.cmd_pub.publish(json.dumps(cmd_dict_2))
 
-    def build_xref(self, near_i, st: State):
-        T = self.mpc.T
-        xref = np.zeros((3, T+1))
-        n = len(self.global_path)
-        for i in range(T+1):
-            idx = min(near_i + i, n-1)
-            xref[0, i] = self.global_path[idx][0]
-            xref[1, i] = self.global_path[idx][1]
-            if i == 0:
-                xref[2, i] = st.yaw
-            else:
-                dx = self.global_path[idx][0] - self.global_path[idx-1][0]
-                dy = self.global_path[idx][1] - self.global_path[idx-1][1]
-                prev_yaw = xref[2, i-1]
-                new_yaw = math.atan2(dy, dx)
-                # 부드럽게 연결
-                xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw),
-                                                   math.cos(new_yaw - prev_yaw))
-        return xref
+    def get_nearest_idx(self, x, y, path, start_i):
+        if start_i >= len(path):
+            return len(path) - 1
+        return min(range(start_i, len(path)), key=lambda i: (x - path[i][0])**2 + (y - path[i][1])**2)
 
     def visualize_xref(self, xref):
         path_msg = Path()
         path_msg.header.frame_id = "map"
         path_msg.header.stamp = rospy.Time.now()
         for i in range(xref.shape[1]):
-            px = xref[0, i]
-            py = xref[1, i]
             ps = PoseStamped()
-            ps.header.frame_id = path_msg.header.frame_id
-            ps.header.stamp = path_msg.header.stamp
-            ps.pose.position.x = px
-            ps.pose.position.y = py
+            ps.header = path_msg.header
+            ps.pose.position.x = xref[0, i]
+            ps.pose.position.y = xref[1, i]
             path_msg.poses.append(ps)
         self.xref_pub.publish(path_msg)
 
-    def get_nearest_idx(self, x, y, path, start_i):
-        if start_i == 0:
-            return min(range(len(path)), key=lambda i: (x - path[i][0])**2 + (y - path[i][1])**2)
-        search = 10
-        return min(range(max(0, start_i-5), min(start_i+search, len(path))),
-                   key=lambda i: (x - path[i][0])**2 + (y - path[i][1])**2)
+    def visualize_parking_path(self, parking_path):
+        path_msg = Path()
+        path_msg.header.frame_id = "map"
+        path_msg.header.stamp = rospy.Time.now()
+        for (x, y) in parking_path:
+            ps = PoseStamped()
+            ps.header = path_msg.header
+            ps.pose.position.x = x
+            ps.pose.position.y = y
+            ps.pose.orientation.w = 1.0
+            path_msg.poses.append(ps)
+        self.parking_path_pub.publish(path_msg)
 
     def run(self):
         rospy.spin()
@@ -374,4 +365,3 @@ class MPCNode:
 if __name__ == "__main__":
     node = MPCNode()
     node.run()
-    
