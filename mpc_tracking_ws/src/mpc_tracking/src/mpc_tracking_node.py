@@ -12,9 +12,6 @@ from std_msgs.msg import String
 from utils.msg import localisation
 
 def quaternion_to_yaw(qx, qy, qz, qw):
-    """
-    Convert quaternion to yaw angle (radians).
-    """
     siny_cosp = 2.0 * (qw * qz + qx * qy)
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
     return math.atan2(siny_cosp, cosy_cosp)
@@ -30,10 +27,9 @@ class State:
 
 class NonlinearMPCController:
     """
-    Kinematic Bicycle Model (lateral-only, constant speed) with RK4:
-      x_{k+1}, y_{k+1}, yaw_{k+1} are updated using 4th-order Runge-Kutta method.
+    Kinematic Bicycle Model with 2 inputs: [v, steer].
     - State = [x, y, yaw]
-    - Control = [steer]
+    - Control = [v, steer]
     - Solver: CasADi + IPOPT
     """
     def __init__(self, dt=0.2, horizon=5, wheelbase=0.26):
@@ -41,130 +37,159 @@ class NonlinearMPCController:
         self.T = horizon
         self.wb = wheelbase
 
-        # Cost weights
+        # --- 비용 가중치(예시값) ---
         self.Qx = 700.0
         self.Qy = 700.0
         self.Qyaw = 500.0
-        self.Rsteer = 0.005
-        self.Rd_steer = 0.002  # input change rate cost
 
-        # Constraints
-        self.max_steer = math.radians(25.0)  # ±25 deg
-        self.max_dsteer = math.radians(30.0) # ±30 deg/s
-        self.speed = 0.2  # m/s (상수)
+        # 제어 입력 비용 가중치
+        self.Rv = 0.01       # 속도 입력에 대한 비용
+        self.Rsteer = 0.01   # 조향 입력에 대한 비용
+
+        # 제어 변화율 비용 가중치
+        self.Rdv = 0.005
+        self.Rdsteer = 0.005
+
+        # 최대/최소 속도
+        self.v_min = -0.1
+        self.v_max = 0.3
+
+        # 최대 스티어링(±25 deg)
+        self.max_steer = math.radians(25.0)
+        self.min_steer = -self.max_steer
 
         # CasADi Symbolic Setup
         self.nx = 3  # (x, y, yaw)
-        self.nu = 1  # (steer)
+        self.nu = 2  # (v, steer)
 
     def solve_mpc(self, x0, xref):
         """
         x0: 초기 상태 [x, y, yaw]
-        xref: shape=(3, T+1), MPC horizon 동안 추종하고자 하는 레퍼런스
-        return: steer_array (길이 T), state_array (3 x (T+1)) 예측값
+        xref: shape=(3, T+1), MPC horizon 동안 추종하고자 하는 레퍼런스 (x, y, yaw)
+        return: (v_array, steer_array), state_array
         """
+
         T = self.T
         dt = self.dt
         wb = self.wb
-        v = self.speed
 
-        # ---- 1) CasADi 변수 정의 ----
+        # 1) 최적화 변수: 상태(T+1) + 제어(T)
+        #    상태 = 3 * (T+1), 제어 = 2 * T
         n_vars = (self.nx)*(T+1) + (self.nu)*T
         opt_x = ca.SX.sym('opt_x', n_vars)
 
-        # Helper 함수: 인덱스 접근
+        # Helper index
         def state_idx(k):
             return self.nx * k
+
         def control_idx(k):
             return self.nx*(T+1) + self.nu*k
 
-        # ---- 2) 목적함수 (cost) 정의용 변수 및 식 초기화 ----
+        # 2) 비용함수 초기화
         obj = 0.0
 
-        # ---- 3) 제약조건 g( opt_x ) = 0 (혹은 부등호) / bounds ----
+        # 3) 제약조건 모음
         g = []
         lbg = []
         ubg = []
 
-        # ---- 3.1) 초기 상태 고정: (x(0), y(0), yaw(0)) = x0
+        # 3.1) 초기 상태 고정: (x(0), y(0), yaw(0)) = x0
         x_init = opt_x[state_idx(0) + 0]
         y_init = opt_x[state_idx(0) + 1]
         yaw_init = opt_x[state_idx(0) + 2]
+
         g += [x_init - x0[0], y_init - x0[1], yaw_init - x0[2]]
         lbg += [0.0, 0.0, 0.0]
         ubg += [0.0, 0.0, 0.0]
 
-        # ---- 3.2) 동역학 제약: RK4 적용 ----
         # 동역학 함수 정의
         def f(st, con):
+            """
+            st = [x, y, yaw]
+            con = [v, steer]
+            """
             x, y, yaw = st[0], st[1], st[2]
-            steer = con[0]
+            v, steer = con[0], con[1]
             dx = v * ca.cos(yaw)
             dy = v * ca.sin(yaw)
-            dyaw = (v / wb) * steer  # 단순화된 모델 (tan(steer) 대신 steer 사용)
+            dyaw = (v / wb) * steer  # tan(steer) 대신 steer
             return ca.vertcat(dx, dy, dyaw)
 
+        # 3.2) RK4로 다음 상태 제약
         for k in range(T):
             # 현재 상태
-            st = ca.vertcat(opt_x[state_idx(k) + 0],
-                            opt_x[state_idx(k) + 1],
-                            opt_x[state_idx(k) + 2])
-            # 제어 입력
-            con = ca.vertcat(opt_x[control_idx(k) + 0])
+            st_k = opt_x[state_idx(k): state_idx(k)+3]
+            # 제어
+            con_k = opt_x[control_idx(k): control_idx(k)+2]
             # 다음 상태
-            st_next = ca.vertcat(opt_x[state_idx(k+1) + 0],
-                                 opt_x[state_idx(k+1) + 1],
-                                 opt_x[state_idx(k+1) + 2])
+            st_next = opt_x[state_idx(k+1): state_idx(k+1)+3]
 
-            # RK4 계산
-            k1 = f(st, con)
-            k2 = f(st + (dt/2) * k1, con)
-            k3 = f(st + (dt/2) * k2, con)
-            k4 = f(st + dt * k3, con)
-            st_next_RK4 = st + (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+            # RK4
+            k1 = f(st_k, con_k)
+            k2 = f(st_k + (dt/2)*k1, con_k)
+            k3 = f(st_k + (dt/2)*k2, con_k)
+            k4 = f(st_k + dt*k3, con_k)
+            st_next_RK4 = st_k + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
 
-            # 제약 조건: st_next = st_next_RK4
+            # 제약: st_next = st_next_RK4
             g += [st_next - st_next_RK4]
             lbg += [0.0, 0.0, 0.0]
             ubg += [0.0, 0.0, 0.0]
 
-        # ---- 4) 비용함수 obj에 (xref - xk), (uref - uk)등을 반영 ----
+        # 4) 비용함수 작성
+        #    (xref - xk), (uref - uk) 등
         for k in range(T+1):
-            xk = opt_x[state_idx(k)+0]
-            yk = opt_x[state_idx(k)+1]
-            yawk = opt_x[state_idx(k)+2]
+            xk = opt_x[state_idx(k) + 0]
+            yk = opt_x[state_idx(k) + 1]
+            yawk = opt_x[state_idx(k) + 2]
+
             xr = xref[0, k]
             yr = xref[1, k]
             yr_yaw = xref[2, k]
-            obj += self.Qx * (xk - xr)**3
-            obj += self.Qy * (yk - yr)**3
+
+            # 위치/각도 오차 비용
+            obj += self.Qx * (xk - xr)**2
+            obj += self.Qy * (yk - yr)**2
             obj += self.Qyaw * (yawk - yr_yaw)**2
 
         # 제어 입력 비용 + 제어 변화율 비용
         for k in range(T):
-            steer_k = opt_x[control_idx(k)]
+            vk = opt_x[control_idx(k) + 0]
+            steer_k = opt_x[control_idx(k) + 1]
+            # 입력 자체 비용
+            obj += self.Rv * (vk**2)
             obj += self.Rsteer * (steer_k**2)
+
             if k < T-1:
-                steer_next = opt_x[control_idx(k+1)]
-                dsteer = steer_next - steer_k
-                obj += self.Rd_steer * (dsteer**2)
+                v_next = opt_x[control_idx(k+1) + 0]
+                steer_next = opt_x[control_idx(k+1) + 1]
+                obj += self.Rdv * ((v_next - vk)**2)
+                obj += self.Rdsteer * ((steer_next - steer_k)**2)
 
-        # ---- 5) 스티어링 범위 제약 ----
-        # (변수 bounds로 처리하므로 pass 유지)
-
-        # ---- 6) 변수를 위한 lower bound / upper bound 만들기 ----
+        # 5) bound 생성
+        #   상태 (x, y, yaw)는 제한 없이 -inf ~ inf
+        #   제어 (v, steer)는 하단/상단 제한
         lbx = []
         ubx = []
+        # 상태 (T+1)
         for k in range(T+1):
+            # x, y
             lbx += [-1.0e6, -1.0e6]
             ubx += [1.0e6, 1.0e6]
+            # yaw
             lbx += [-1.0e6]
             ubx += [1.0e6]
+
+        # 제어 (T)
         for k in range(T):
-            lbx += [-self.max_steer]
+            # v
+            lbx += [self.v_min]
+            ubx += [self.v_max]
+            # steer
+            lbx += [self.min_steer]
             ubx += [self.max_steer]
 
-        # ---- 7) NLP 문제 정의 (CasADi) ----
+        # 6) NLP 설정
         nlp_dict = {
             'f': obj,
             'x': opt_x,
@@ -175,12 +200,14 @@ class NonlinearMPCController:
             'ipopt': {
                 'max_iter': 200,
                 'acceptable_tol': 1e-6,
-                'acceptable_obj_change_tol': 1e-6
+                'acceptable_obj_change_tol': 1e-6,
+                # 'print_level': 0
             }
+            # 'print_time': False
         }
         solver = ca.nlpsol('solver', 'ipopt', nlp_dict, solver_opts)
 
-        # ---- 8) 초기 추정값(initial guess) ----
+        # 7) 초기 추정값
         x_init_guess = []
         for k in range(T+1):
             alpha = k / float(T+1)
@@ -188,11 +215,17 @@ class NonlinearMPCController:
             yg = x0[1] * (1-alpha) + xref[1,-1] * alpha
             ygaw = x0[2] * (1-alpha) + xref[2,-1] * alpha
             x_init_guess += [xg, yg, ygaw]
-        for k in range(T):
-            x_init_guess += [0.0]
 
-        # ---- 9) solve ----
-        sol = solver(lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg, x0=x_init_guess)
+        for k in range(T):
+            # v, steer 각각 0으로 시작
+            x_init_guess += [0.0, 0.0]
+
+        # 8) Solve
+        sol = solver(
+            x0=x_init_guess,
+            lbx=lbx, ubx=ubx,
+            lbg=lbg, ubg=ubg
+        )
 
         if solver.stats()['return_status'] not in ['Solve_Succeeded', 'Optimal_Solution_Found']:
             rospy.logwarn("IPOPT failed. status=" + solver.stats()['return_status'])
@@ -200,19 +233,26 @@ class NonlinearMPCController:
 
         sol_x = sol['x'].full().flatten()
 
-        # ---- 10) 결과 파싱 ----
-        steer_array = sol_x[self.nx*(T+1) : self.nx*(T+1) + T]
-        state_array = sol_x[0 : self.nx*(T+1)].reshape((T+1, self.nx)).T
+        # 9) 결과 파싱
+        #    제어: v_array, steer_array
+        #    상태: state_array
+        all_states = sol_x[: self.nx*(T+1)].reshape((T+1, self.nx)).T  # (3, T+1)
+        all_controls = sol_x[self.nx*(T+1): ].reshape((T, self.nu)).T  # (2, T)
 
-        return steer_array, state_array
+        # [v1, v2, ..., vT], [steer1, steer2, ..., steerT]
+        v_traj = all_controls[0, :]
+        steer_traj = all_controls[1, :]
 
-# ------------------------- ROS Node -------------------------
+        return (v_traj, steer_traj), all_states
+
+
+# ------------------------- ROS Node (예시) -------------------------
 class MPCNode:
     def __init__(self):
         rospy.init_node("mpc_lateral_node", anonymous=True)
-        self.desired_speed = rospy.get_param("~desired_speed", 0.2)
-        self.mpc = NonlinearMPCController(dt=0.25, horizon=5, wheelbase=0.26)
-        self.mpc.speed = self.desired_speed
+
+        # horizon, dt 등은 상황 맞춰 조정
+        self.mpc = NonlinearMPCController(dt=0.25, horizon=4, wheelbase=0.26)
 
         self.x = 0.0
         self.y = 0.0
@@ -240,6 +280,7 @@ class MPCNode:
     def loc_callback(self, msg: localisation):
         x_c, y_c = msg.posA, msg.posB
         theta = self.yaw
+        # 차량의 rear-axle 기준 좌표로 변환 (필요 시)
         x_rear = x_c - (0.26 * 0.5) * math.cos(theta)
         y_rear = y_c - (0.26 * 0.5) * math.sin(theta)
         self.x = x_rear
@@ -265,21 +306,25 @@ class MPCNode:
         self.visualize_xref(xref)
 
         x0 = np.array([st.x, st.y, st.yaw])
-        steer_traj, state_traj = self.mpc.solve_mpc(x0, xref)
-        if steer_traj is None:
+        (v_traj, steer_traj), state_traj = self.mpc.solve_mpc(x0, xref)
+        if v_traj is None:
             rospy.logwarn("MPC failed, use safe command")
+            v_cmd = 0.0
             steer_cmd = 0.0
         else:
+            # 첫 시점의 해
+            v_cmd = v_traj[0]
             steer_cmd = steer_traj[0]
 
-        speed_cmd = self.mpc.speed
+        # speed_cmd, steer_deg
         steer_deg = math.degrees(steer_cmd)
-        rospy.loginfo(f"[MPC] => speed={speed_cmd:.2f}, steer={steer_cmd:.2f} rad => {steer_deg:.2f} deg")
+        rospy.loginfo(f"[MPC] => v={v_cmd:.2f} m/s, steer={steer_cmd:.2f} rad => {steer_deg:.2f} deg")
 
-        cmd_dict = {'action': '1', 'speed': float(speed_cmd)}
-        self.cmd_pub.publish(json.dumps(cmd_dict))
-        cmd_dict = {'action': '2', 'steerAngle': float(-steer_deg)}
-        self.cmd_pub.publish(json.dumps(cmd_dict))
+        # 아래 예시는 command가 JSON 형태라는 가정 하에 작성
+        cmd_dict_1 = {'action': '1', 'speed': float(v_cmd)}
+        self.cmd_pub.publish(json.dumps(cmd_dict_1))
+        cmd_dict_2 = {'action': '2', 'steerAngle': float(-steer_deg)}
+        self.cmd_pub.publish(json.dumps(cmd_dict_2))
 
     def build_xref(self, near_i, st: State):
         T = self.mpc.T
@@ -296,6 +341,7 @@ class MPCNode:
                 dy = self.global_path[idx][1] - self.global_path[idx-1][1]
                 prev_yaw = xref[2, i-1]
                 new_yaw = math.atan2(dy, dx)
+                # 부드럽게 연결
                 xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw),
                                                    math.cos(new_yaw - prev_yaw))
         return xref
@@ -328,3 +374,4 @@ class MPCNode:
 if __name__ == "__main__":
     node = MPCNode()
     node.run()
+    
