@@ -7,7 +7,7 @@ from std_msgs.msg import String,Float64
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point, Quaternion
 
-# from utils.msg import localisation
+from utils.msg import localisation
 
 import math
 import json
@@ -35,14 +35,14 @@ class PurePursuit:
 
         # ROS Subscribers
         self.path_sub = rospy.Subscriber('/global_path', Path, self.path_callback)
-        # self.gps_sub = rospy.Subscriber('/automobile/localisation', localisation, self.gps_callback)
-        self.odom_sub = rospy.Subscriber('/odom',Odometry,self.odom_callback)
+        self.gps_sub = rospy.Subscriber('/automobile/localisation', localisation, self.gps_callback)
+        # self.odom_sub = rospy.Subscriber('/odom',Odometry,self.odom_callback)
         # ROS Publishers
         self.command_pub = rospy.Publisher('/automobile/command', String, queue_size=1)
         self.current_pos_pub = rospy.Publisher('/visualization/current_pos', Marker, queue_size=1)
         self.look_ahead_pub = rospy.Publisher('/visualization/look_ahead', Marker, queue_size=1)
         self.path_marker_pub = rospy.Publisher('/visualization/look_ahead_line', Marker, queue_size=1)
-        self.speed_pub = rospy.Publisher('/pp/speed',Float64,queue_size=1)
+        # self.speed_pub = rospy.Publisher('/pp/speed',Float64,queue_size=1)
         # Internal variables
         self.control_timer = rospy.Timer(rospy.Duration(0.1), self.control_loop)
 
