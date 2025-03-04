@@ -4,6 +4,7 @@ import math
 import numpy as np
 import json
 import casadi as ca
+from scipy.interpolate import CubicSpline
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Imu
@@ -31,9 +32,9 @@ class NonlinearMPCController:
         if scenario == "parking":
             rospy.loginfo("[MPC] => parking param set")
             self.T = 12  # 예측 지평선 증가
-            self.Qx = 40.0  # x 오차 가중치 증가
-            self.Qy = 70.0  # y 오차 가중치 더 크게 설정
-            self.Qyaw = 2  # yaw 가중치는 적당히
+            self.Qx = 40.0
+            self.Qy = 70.0
+            self.Qyaw = 2
             self.Rv = 0.005
             self.Rsteer = 0.005
             self.Rdv = 0.001
@@ -72,6 +73,7 @@ class NonlinearMPCController:
         lbg = []
         ubg = []
 
+        # 초기 상태 고정
         g += [opt_x[sidx(0)+0] - x0[0], opt_x[sidx(0)+1] - x0[1], opt_x[sidx(0)+2] - x0[2]]
         lbg += [0.0, 0.0, 0.0]
         ubg += [0.0, 0.0, 0.0]
@@ -79,15 +81,15 @@ class NonlinearMPCController:
         def f(st, con):
             x, y, yaw = st[0], st[1], st[2]
             v, steer = con[0], con[1]
-            dx = v*ca.cos(yaw)
-            dy = v*ca.sin(yaw)
+            dx = v * ca.cos(yaw)
+            dy = v * ca.sin(yaw)
             dyaw = (v/wb)*steer
             return ca.vertcat(dx, dy, dyaw)
 
         for k in range(T):
             st_k = opt_x[sidx(k):sidx(k)+3]
             con_k = opt_x[cidx(k):cidx(k)+2]
-            st_next = opt_x[sidx(k+1): sidx(k+1)+3]
+            st_next = opt_x[sidx(k+1):sidx(k+1)+3]
             k1 = f(st_k, con_k)
             k2 = f(st_k+(dt/2)*k1, con_k)
             k3 = f(st_k+(dt/2)*k2, con_k)
@@ -98,16 +100,22 @@ class NonlinearMPCController:
             ubg += [0.0, 0.0, 0.0]
 
         for k in range(T+1):
-            xk, yk, yawk = opt_x[sidx(k)+0], opt_x[sidx(k)+1], opt_x[sidx(k)+2]
-            xr, yr, yr_yaw = xref[0, k], xref[1, k], xref[2, k]
+            xk = opt_x[sidx(k)+0]
+            yk = opt_x[sidx(k)+1]
+            yawk = opt_x[sidx(k)+2]
+            xr = xref[0, k]
+            yr = xref[1, k]
+            yr_yaw = xref[2, k]
             obj += self.Qx*(xk - xr)**2 + self.Qy*(yk - yr)**2 + self.Qyaw*(yawk - yr_yaw)**2
 
         for k in range(T):
-            vk, steer_k = opt_x[cidx(k)+0], opt_x[cidx(k)+1]
+            vk = opt_x[cidx(k)+0]
+            steer_k = opt_x[cidx(k)+1]
             obj += self.Rv*(vk**2) + self.Rsteer*(steer_k**2)
             if k < T-1:
-                v_next, st_next = opt_x[cidx(k+1)+0], opt_x[cidx(k+1)+1]
-                obj += self.Rdv*((v_next - vk)**2) + self.Rdsteer*((st_next - steer_k)**2)
+                v_next = opt_x[cidx(k+1)+0]
+                s_next = opt_x[cidx(k+1)+1]
+                obj += self.Rdv*((v_next - vk)**2) + self.Rdsteer*((s_next - steer_k)**2)
 
         lbx = [-1e6]*((T+1)*self.nx) + [self.v_min, self.min_steer]*T
         ubx = [1e6]*((T+1)*self.nx) + [self.v_max, self.max_steer]*T
@@ -132,7 +140,7 @@ class NonlinearMPCController:
             return None, None
 
         solx = sol['x'].full().flatten()
-        all_controls = solx[self.nx*(T+1): ].reshape((T, self.nu)).T
+        all_controls = solx[self.nx*(T+1):].reshape((T, self.nu)).T
         return (all_controls[0, :], all_controls[1, :]), None
 
 # ------------------ ROS Node ------------------
@@ -146,24 +154,27 @@ class MPCNode:
     def __init__(self):
         rospy.init_node("mpc_lateral_node", anonymous=True)
         self.mpc = NonlinearMPCController(dt=0.25, horizon=10, wheelbase=0.26)
-        
         self.in_parking_mode = False
+        self.in_exit_parking_mode = False  # 새 exit 모드 플래그
         self.parking_path = []
         self.parking_idx = 0
-        
+        self.exit_parking_path = []
+        self.exit_parking_idx = 0
+
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
         self.loc_ok = False
         self.yaw_ok = False
-        
+
         self.global_path = []
         self.global_path_ok = False
         self.global_idx = 0
-        
+
+        # 예시 그래프: 노드 232(주차 시작), 901(주차 완료), 233(exit)
         self.graph_nodes = {
             "232": (10.82, 0.92),
-            "901": (10.04, 0.54),
+            "901": (10.04, 1.3),
             "233": (10.5, 0.92),
         }
         self.graph_edges = {
@@ -182,8 +193,13 @@ class MPCNode:
         self.timer = rospy.Timer(rospy.Duration(0.05), self.control_loop)
 
     def park_signal_cb(self, msg: Bool):
-        self.parking_signal = msg.data
-        rospy.loginfo(f"[Parking] => parking signal {'ON' if msg.data else 'OFF'}")
+    # 받은 주차 신호를 one-shot 방식으로 저장
+        if msg.data:
+            self.parking_signal = True
+            rospy.loginfo("[Parking] => parking signal ON")
+        else:
+            self.parking_signal = False
+            rospy.loginfo("[Parking] => parking signal OFF")
 
     def path_callback(self, msg: Path):
         self.global_path = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
@@ -202,8 +218,21 @@ class MPCNode:
         self.yaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
         self.yaw_ok = True
 
+    def apply_cubic_spline(self, path_coords):
+        if len(path_coords) < 3:
+            return path_coords
+        path_array = np.array(path_coords)
+        distances = np.sqrt(np.sum(np.diff(path_array, axis=0)**2, axis=1))
+        t = np.concatenate(([0], np.cumsum(distances)))
+        cs_x = CubicSpline(t, path_array[:, 0])
+        cs_y = CubicSpline(t, path_array[:, 1])
+        t_new = np.linspace(0, t[-1], num=100)
+        new_x = cs_x(t_new)
+        new_y = cs_y(t_new)
+        new_path = list(zip(new_x, new_y))
+        return new_path
+
     def build_parking_path(self, start_node, end_node):
-        """주차 경로 생성 후 Bezier 곡선 적용"""
         import heapq
         dist = {n: float('inf') for n in self.graph_nodes.keys()}
         prev = {n: None for n in self.graph_nodes.keys()}
@@ -220,7 +249,7 @@ class MPCNode:
             neighbors = self.graph_edges[cur_node]
             for nxt in neighbors:
                 cost = math.hypot(self.graph_nodes[nxt][0] - self.graph_nodes[cur_node][0],
-                                self.graph_nodes[nxt][1] - self.graph_nodes[cur_node][1])
+                                  self.graph_nodes[nxt][1] - self.graph_nodes[cur_node][1])
                 alt = dist[cur_node] + cost
                 if alt < dist[nxt]:
                     dist[nxt] = alt
@@ -233,22 +262,8 @@ class MPCNode:
             n = prev[n]
         path_nodes.reverse()
         raw_path = [self.graph_nodes[n] for n in path_nodes]
-        return self.apply_bezier(raw_path)  # Bezier 곡선으로 부드럽게 보정
-    def apply_bezier(self, path_coords):
-        """주차 경로를 Bezier 곡선으로 부드럽게 보정"""
-        if len(path_coords) < 3:
-            return path_coords
-        new_path = []
-        for i in range(0, len(path_coords) - 2, 1):  # 각 구간마다 제어점 활용
-            p0 = path_coords[i]
-            p1 = path_coords[i + 1]
-            p2 = path_coords[i + 2] if i + 2 < len(path_coords) else path_coords[-1]
-            for t in np.linspace(0, 1, 10):  # 각 구간에 10개의 보간 점 추가
-                B_x = (1-t)**2 * p0[0] + 2*(1-t)*t * p1[0] + t**2 * p2[0]
-                B_y = (1-t)**2 * p0[1] + 2*(1-t)*t * p1[1] + t**2 * p2[1]
-                new_path.append((B_x, B_y))
-        new_path.append(path_coords[-1])  # 마지막 점 유지
-        return new_path
+        return self.apply_cubic_spline(raw_path)
+
     def build_xref(self, path_xy, near_i, st, is_parking=False):
         T = self.mpc.T
         xref = np.zeros((3, T+1))
@@ -261,13 +276,14 @@ class MPCNode:
                 xref[2, i] = st.yaw
             else:
                 if is_parking and idx == n-1:
-                    xref[2, i] = 0.0  # 마지막 지점에서만 yaw=0
+                    xref[2, i] = 0.0
                 else:
                     dx = path_xy[idx][0] - path_xy[idx-1][0]
                     dy = path_xy[idx][1] - path_xy[idx-1][1]
                     prev_yaw = xref[2, i-1]
                     new_yaw = math.atan2(dy, dx)
-                    xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw), math.cos(new_yaw - prev_yaw))
+                    xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw),
+                                                       math.cos(new_yaw - prev_yaw))
         return xref
 
     def control_loop(self, event):
@@ -276,27 +292,30 @@ class MPCNode:
 
         st = StateStruct(self.x, self.y, self.yaw)
 
-        if not self.in_parking_mode:
+        # 상태에 따라 모드를 구분: driving, parking, exit_parking
+        if not self.in_parking_mode and not self.in_exit_parking_mode:
+            # driving mode: 글로벌 경로 따라가기
             near_i = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
             self.global_idx = near_i
             xref = self.build_xref(self.global_path, near_i, st, is_parking=False)
             self.visualize_xref(xref)
-
             self.mpc.set_scenario("driving")
             x0 = np.array([st.x, st.y, st.yaw])
             (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
             v_cmd = v_traj[0] if v_traj is not None else 0.0
             s_cmd = steer_traj[0] if steer_traj is not None else 0.0
 
+            # 예: 특정 지점(232) 근처에 도달하면 주차 신호가 있으면 주차 모드로 전환
             dist_232 = math.hypot(st.x - 10.84, st.y - 0.92)
             if dist_232 < 0.2 and getattr(self, 'parking_signal', False):
                 rospy.loginfo("[Parking] => Switch to parking mode: 232->901")
                 self.in_parking_mode = True
+                self.parking_signal = False 
                 self.parking_path = self.build_parking_path('232', '901')
                 self.parking_idx = 0
                 self.visualize_parking_path(self.parking_path)
-
-        else:
+        elif self.in_parking_mode:
+            # parking mode: 주차 경로 따라가기
             if len(self.parking_path) < 2:
                 rospy.logwarn("[Parking] no valid path => back to driving")
                 self.in_parking_mode = False
@@ -306,7 +325,6 @@ class MPCNode:
             self.parking_idx = near_i
             xref = self.build_xref(self.parking_path, near_i, st, is_parking=True)
             self.visualize_xref(xref)
-
             self.mpc.set_scenario("parking")
             x0 = np.array([st.x, st.y, st.yaw])
             (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
@@ -317,13 +335,47 @@ class MPCNode:
             dist_end = math.hypot(st.x - last_x, st.y - last_y)
             yaw_error = abs(st.yaw)
             rospy.loginfo(f"[Parking] dist_end={dist_end:.3f}, yaw_error={math.degrees(yaw_error):.2f} deg")
-            if dist_end < 0.15 and yaw_error < math.radians(15):
-                rospy.loginfo("[Parking] => park complete => back to driving")
+            if dist_end < 0.15 and yaw_error < math.radians(10):
+                rospy.loginfo("[Parking] => park complete. Pausing for 1 sec, then exiting parking mode.")
+                # rospy.sleep(2.0)
+                for _ in range(50000):
+                    cmd_dict_1 = {'action': '1', 'speed': 0}
+                    self.cmd_pub.publish(json.dumps(cmd_dict_1))
+                # 주차 완료 후 exit parking 모드로 전환하고 주차 경로의 역순을 exit 경로로 설정
                 self.in_parking_mode = False
+                self.in_exit_parking_mode = True
+                self.exit_parking_path = list(reversed(self.parking_path))
+                self.exit_parking_idx = 0
+                self.visualize_parking_path(self.exit_parking_path)
+        elif self.in_exit_parking_mode:
+            # exit parking mode: 역순 경로 따라 글로벌 경로로 복귀
+            if len(self.exit_parking_path) < 2:
+                rospy.logwarn("[Parking Exit] no valid exit path => back to driving")
+                self.in_exit_parking_mode = False
+                self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
+                return
+
+            near_i = self.get_nearest_idx(st.x, st.y, self.exit_parking_path, self.exit_parking_idx)
+            self.exit_parking_idx = near_i
+            xref = self.build_xref(self.exit_parking_path, near_i, st, is_parking=True)
+            self.visualize_xref(xref)
+            self.mpc.set_scenario("parking")
+            x0 = np.array([st.x, st.y, st.yaw])
+            (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
+            v_cmd = v_traj[0] if v_traj is not None else 0.0
+            s_cmd = steer_traj[0] if steer_traj is not None else 0.0
+
+            # exit 완료 판단: exit 경로의 마지막 점(원래 주차 시작점, 예: 232) 근처 도달
+            exit_target = self.exit_parking_path[-1]
+            dist_exit = math.hypot(st.x - exit_target[0], st.y - exit_target[1])
+            rospy.loginfo(f"[Parking Exit] dist_exit={dist_exit:.3f}")
+            if dist_exit < 0.15:
+                rospy.loginfo("[Parking Exit] => exit complete. Returning to global path.")
+                self.in_exit_parking_mode = False
                 self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
 
         steer_deg = math.degrees(s_cmd)
-        rospy.loginfo(f"[MPC] parking={self.in_parking_mode}, v={v_cmd:.2f}, steer={s_cmd:.2f} rad => {steer_deg:.2f} deg")
+        rospy.loginfo(f"[MPC] parking={self.in_parking_mode or self.in_exit_parking_mode}, v={v_cmd:.2f}, steer={s_cmd:.2f} rad => {steer_deg:.2f} deg")
         cmd_dict_1 = {'action': '1', 'speed': float(v_cmd)}
         self.cmd_pub.publish(json.dumps(cmd_dict_1))
         cmd_dict_2 = {'action': '2', 'steerAngle': float(-steer_deg)}
