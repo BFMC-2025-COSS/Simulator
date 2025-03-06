@@ -30,10 +30,11 @@
 
 import json
 from pynput import keyboard
-
+import math
 from RcBrainThread import RcBrainThread
 from std_msgs.msg import String
 from std_msgs.msg import Float64
+from sensor_msgs.msg import LaserScan
 
 import rospy
 
@@ -53,6 +54,7 @@ class RemoteControlTransmitterProcess():
         self.rcBrain   =  RcBrainThread()   
         
         rospy.init_node('EXAMPLEnode', anonymous=True)     
+        self.scan_sub = rospy.Subscriber("/scan_depth", LaserScan, self.laserscan_callback, queue_size=1)
         self.publisher = rospy.Publisher('/automobile/command', String, queue_size=1)
         self.speed_pub = rospy.Publisher('/rear_wheel_speed', Float64, queue_size=10)
         self.steer_pub = rospy.Publisher('/steering_angle', Float64, queue_size=10)
@@ -80,7 +82,24 @@ class RemoteControlTransmitterProcess():
                 self._send_command(keyMsg)
     
         except: pass
-        
+    def laserscan_callback(self, msg: LaserScan):
+        """레이저스캔 데이터를 처리하여 주차 공간 점유 여부 확인"""
+
+        ranges = msg.ranges
+        angle_min = msg.angle_min
+        angle_increment = msg.angle_increment
+
+        # 글로벌 좌표로 변환된 점들
+        global_points = []
+        for i, r in enumerate(ranges):
+            if msg.range_min < r < msg.range_max:  # 유효 범위 내 데이터만 사용
+                alpha = angle_min + i * angle_increment
+                x_local = r * math.cos(alpha)
+                y_local = r * math.sin(alpha)
+                x_global = self.x + x_local * math.cos(self.yaw) - y_local * math.sin(self.yaw)
+                y_global = self.y + x_local * math.sin(self.yaw) + y_local * math.cos(self.yaw)
+                global_points.append((x_global, y_global))
+                rospy.loginfo(global_points)
     # ===================================== KEY RELEASE ==================================
     def keyRelease(self, key):
         """Processing the key realeasing.

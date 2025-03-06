@@ -46,7 +46,7 @@
     <!-- 0.261799388 -->
     <include>
       <uri>model://realsense</uri>
-      <pose>0 0 0.2 0 0.2617 0</pose>
+      <pose>0 0 0.2 0 0.2094 0</pose>
       <name>realsense</name>
     </include>
 
