@@ -1,27 +1,11 @@
-# How to Run
-## purepursuit_ws
-### node_to_path
+# How to Run: Simulation
+## control_ws
 ```bash
-cd ~/BFMC/Simulator/purepursuit_ws
+cd ~/BFMC/Simulator/control_ws
 source devel/setup.bash
 
-roslaunch control node_to_path.launch
+roslaunch control control.launch
 ```
-
-### pure_pursuit
-```bash
-cd ~/BFMC/Simulator/purepursuit_ws
-source devel/setup.bash
-
-rosrun control pure_pursuit.py
-```
-you can visualize current position, look ahead point, look ahead line in `Rviz`
-### if you want to change global path
-Edit `config/global_path_key_nodes.yaml`  
-you must write nodes below  
-1. start node
-2. nodes that you want to visit
-3. end node
 
 ## test_env
 ### Gazebo
@@ -39,3 +23,6 @@ this->m_gps_pose.posA   = this->m_model->RelativePose().Pos().X();// + (rand() /
 this->m_gps_pose.posB   = abs(this->m_model->RelativePose().Pos().Y());// + (rand() / (float)RAND_MAX * 0.2) - 0.1;
 ```
 and `catkin_make`
+# TODO: Real car
+- You can edit topic names in `control.launch`
+- You can edit `look ahead distance` and `wheel_base` in `control.launch`
