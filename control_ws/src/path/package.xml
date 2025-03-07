@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>node_to_path</name>
+  <name>path</name>
   <version>0.0.1</version>
   <description>Parses a GraphML file and publishes a global path</description>
   <maintainer email="wjdwnsqja08@gmail.com">JUNBEOM JUNG</maintainer>
