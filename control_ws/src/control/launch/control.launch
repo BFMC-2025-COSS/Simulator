@@ -1,32 +1,22 @@
 <launch>
-    <!-- node_to_path Parameters -->
-    <param name="graphml_file" value="$(find path)/config/Competition_track_graph.graphml"/>
-    <param name="key_nodes_file" value="$(find path)/config/global_path_key_nodes.yaml"/>
-    <param name="publish_rate" value="1.0"/>
-
-    <!-- control Parameters -->
-    <param name="look_ahead_dist" value="0.38"/>
-    <param name="wheel_base" value="0.26"/>
-    <param name="desired_speed" value="0.2"/>
-    <param name="controller_type" value="mpc"/> <!-- mpc or purepursuit -->
-
-    <param name="path_topic" value="/global_path"/>
-    <param name="gps_topic" value="/automobile/localisation"/>
-    <param name="imu_topic" value="/automobile/IMU"/>
-    <param name="command_topic" value="/automobile/command"/>
-
     <!-- node_to_path Node -->
-    <node pkg="path"
-          type="node_to_path.py"
-          name="node_to_path"
-          output="screen">
+    <node pkg="path" type="node_to_path.py" name="node_to_path" output="screen">
+        <param name="graphml_file" value="$(find path)/config/Competition_track_graph.graphml"/>
+        <param name="key_nodes_file" value="$(find path)/config/global_path_key_nodes.yaml"/>
+        <param name="publish_rate" value="1.0"/>
+        <param name="path_topic" value="/global_path"/>
     </node>
 
     <!-- control Node -->
-    <node pkg="control"
-          type="control.py"
-          name="control"
-          output="screen">
-    </node>
+    <node pkg="control" type="control.py" name="control" output="screen">
+        <param name="look_ahead_dist" value="0.38"/>
+        <param name="wheel_base" value="0.26"/>
+        <param name="desired_speed" value="0.2"/>
+        <param name="controller_type" value="mpc"/> <!-- mpc or purepursuit -->
 
+        <param name="path_topic" value="/global_path"/>
+        <param name="gps_topic" value="/automobile/localisation"/>
+        <param name="imu_topic" value="/automobile/IMU"/>
+        <param name="command_topic" value="/automobile/command"/>
+    </node>
 </launch>
