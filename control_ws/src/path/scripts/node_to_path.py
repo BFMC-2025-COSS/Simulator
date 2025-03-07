@@ -10,15 +10,15 @@ from scipy.interpolate import interp1d, CubicSpline
 from std_msgs.msg import Header
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
-from node_to_path.msg import PathWithDotted, DottedPose
+from path.msg import PathWithDotted, DottedPose
 import math  # <- 추가 필요!
 
-class GraphMLToPathNode:
+class NodeToPath:
     def __init__(self):
-        rospy.init_node('graphml_to_path_node', anonymous=True)
+        rospy.init_node('node_to_path', anonymous=True)
 
         rospack = rospkg.RosPack()
-        package_path = rospack.get_path('node_to_path')
+        package_path = rospack.get_path('path')
 
         default_graphml_path = os.path.join(package_path, 'config', 'Competition_track_graph.graphml')
         default_key_nodes_path = os.path.join(package_path, 'config', 'global_path_key_nodes.yaml')
@@ -182,7 +182,7 @@ class GraphMLToPathNode:
 
 if __name__ == '__main__':
     try:
-        node = GraphMLToPathNode()
-        node.run()
+        ntp = NodeToPath()
+        ntp.run()
     except rospy.ROSInterruptException:
         pass
