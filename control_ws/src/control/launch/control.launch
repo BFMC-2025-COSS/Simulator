@@ -1,10 +1,28 @@
 <launch>
-    <!-- Set parameters -->
-    <param name="look_ahead_dist" value="0.068"/>
-    <param name="wheel_base" value="0.034"/>
-    <param name="desired_speed" value="20.0"/>
+    <!-- node_to_path Parameters -->
+    <param name="graphml_file" value="$(find path)/config/Competition_track_graph.graphml"/>
+    <param name="key_nodes_file" value="$(find path)/config/global_path_key_nodes.yaml"/>
+    <param name="publish_rate" value="1.0"/>
 
-    <!-- Launch the Python node -->
+    <!-- control Parameters -->
+    <param name="look_ahead_dist" value="0.38"/>
+    <param name="wheel_base" value="0.26"/>
+    <param name="desired_speed" value="0.2"/>
+    <param name="controller_type" value="mpc"/> <!-- mpc or purepursuit -->
+
+    <param name="path_topic" value="/global_path"/>
+    <param name="gps_topic" value="/automobile/localisation"/>
+    <param name="imu_topic" value="/automobile/IMU"/>
+    <param name="command_topic" value="/automobile/command"/>
+
+    <!-- node_to_path Node -->
+    <node pkg="path"
+          type="node_to_path.py"
+          name="node_to_path"
+          output="screen">
+    </node>
+
+    <!-- control Node -->
     <node pkg="control"
           type="control.py"
           name="control"
