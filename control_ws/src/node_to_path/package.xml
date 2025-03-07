@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>node_to_path</name>
+  <version>0.0.1</version>
+  <description>Parses a GraphML file and publishes a global path</description>
+  <maintainer email="wjdwnsqja08@gmail.com">JUNBEOM JUNG</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>message_generation</build_depend>
+  
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>rospy</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>networkx</exec_depend>
+  <exec_depend>rospkg</exec_depend>
+  <exec_depend>yaml</exec_depend>
+  <exec_depend>message_runtime</exec_depend>
+</package>
