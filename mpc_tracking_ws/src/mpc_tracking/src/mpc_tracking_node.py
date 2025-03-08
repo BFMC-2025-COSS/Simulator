@@ -4,9 +4,7 @@ import math
 import numpy as np
 import json
 import casadi as ca
-import cv2
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import LaserScan
 from scipy.interpolate import CubicSpline
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
@@ -14,142 +12,13 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import String, Bool
 from utils.msg import localisation
 
-# 카메라 내부 파라미터 (예시 값: 실제 카메라에 맞게 수정)
-CAMERA_FX = 347.99755859375  # focal length x (픽셀)
-CAMERA_FY = 347.99755859375 # focal length y (픽셀)
-CAMERA_CX = 320.0  # principal point x (픽셀)
-CAMERA_CY = 240.0  # principal point y (픽셀)
-
-class ObstacleDetector:
-    def __init__(self):
-        self.bridge = CvBridge()
-        self.depth_sub = rospy.Subscriber("/camera/depth/image_raw", Image, self.depth_callback)
-        self.latest_depth = None
-
-    def depth_callback(self, msg):
-        try:
-            depth_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-            # depth 이미지가 16UC1인 경우를 float32(meter)로 변환하는 등의 전처리 필요
-            self.latest_depth = depth_img.astype(np.float32) / 1000.0  # 예: mm→m 변환
-        except CvBridgeError as e:
-            rospy.logerr("CvBridge error: %s", e)
-
-    def is_valid_pixel(self, u, v, shape):
-        h, w = shape
-        return 0 <= u < w and 0 <= v < h
-
-    def project_to_image(self, cam_point):
-        """
-        카메라 좌표 (X, Y, Z)를 픽셀 좌표(u, v)로 투영하는 간단한 pinhole 카메라 모델.
-        cam_point: (X, Y, Z)
-        """
-        X, Y, Z = cam_point
-        if Z <= 0:
-            return None
-        u = (CAMERA_FX * X / Z) + CAMERA_CX
-        v = (CAMERA_FY * Y / Z) + CAMERA_CY
-        return int(u), int(v)
-
-class ParkingObstacleDetector(ObstacleDetector):
-    def __init__(self):
-        super(ParkingObstacleDetector, self).__init__()
-        # 임계값 (예: 평균 깊이가 0.8m 이상이면 주차 구역이 깨끗하다고 판단)
-        self.obstacle_threshold = 0.8
-
-    def transform_point_map_to_camera(self, map_x, map_y):
-        """
-        후륜축 중심(base_link) 기준으로 주차 노드 좌표 (map_x, map_y)가 주어진다고 가정.
-        1. base_link에서 차체 중심(chassis_link)으로의 보정: x좌표에 +0.152 추가
-        2. chassis_link에서 카메라(camera_link)로의 변환:
-           - 평행이동: (0, 0, 0.2)
-           - 회전: roll=0, pitch=0.2617, yaw=0 → 단순히 pitch 회전만 고려
-        """
-        # 1) 후륜축 중심에서 차체 중심으로 보정
-        # 입력 map_x, map_y는 base_link 좌표에서의 x, y (z=0 가정)
-        chassis_point = np.array([map_x + 0.152, map_y, 0.0, 1.0])  # homogeneous coordinates
-
-        # 2) 차체 중심에서 카메라 좌표로 변환 (고정 변환 행렬 T_chassis_camera)
-        pitch = 0.2617  # rad (약 15°)
-        R = np.array([
-            [np.cos(pitch), 0, np.sin(pitch)],
-            [0, 1, 0],
-            [-np.sin(pitch), 0, np.cos(pitch)]
-        ])
-        T_chassis_camera = np.eye(4)
-        T_chassis_camera[0:3, 0:3] = R
-        T_chassis_camera[0:3, 3] = np.array([0, 0, 0.2])
-        # 변환 적용
-        cam_point_homogeneous = T_chassis_camera.dot(chassis_point)
-        return cam_point_homogeneous[0:3]
-    
-    def visualize_projection(self, u, v):
-        """
-        최신 Depth 이미지를 8비트 그레이 스케일 이미지로 변환한 후,
-        (u,v) 위치에 빨간 원을 그려서 OpenCV 창에 표시.
-        """
-        if self.latest_depth is None:
-            return
-        # Depth 이미지는 m 단위이므로 0~5m 범위를 0~255로 정규화 (필요에 따라 조정)
-        depth_vis = np.clip(self.latest_depth, 0, 5)
-        depth_vis = ((depth_vis / 5.0) * 255).astype(np.uint8)
-        depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
-        cv2.circle(depth_vis, (u, v), 5, (0, 0, 255), -1)
-        cv2.imshow("Depth Projection", depth_vis)
-        cv2.waitKey(1)
-        
-    def detect_obstacle_in_parking_spot(self, node_id, graph_nodes):
-        """
-        node_id (예: '900') 주차 노드 주변 장애물 여부 판단.
-        1) 주차 노드 좌표(map frame, base_link 기준)를 가져옴.
-        2) 위 좌표를 위의 transform 함수로 카메라 좌표로 변환.
-        3) 카메라 투영을 통해 이미지 좌표(u,v) 계산.
-        4) ROI 영역의 평균 Depth를 계산하여 임계값과 비교.
-        """
-        if self.latest_depth is None:
-            rospy.logwarn("No depth data yet")
-            return False  # 데이터 없으면 보수적으로 장애물 있다고 가정
-
-        # 1) 주차 노드 좌표 (map frame, base_link 기준)
-        map_x, map_y = graph_nodes[node_id]
-
-        # 2) base_link → camera_link 변환 (직접 계산)
-        cam_point = self.transform_point_map_to_camera(map_x, map_y)
-        if cam_point is None:
-            return False
-
-        # 3) camera_link → image 좌표 투영
-        projection = self.project_to_image(cam_point)
-        if projection is None:
-            rospy.logwarn("Invalid projection (Z<=0)")
-            return False
-        u, v = projection
-
-        self.visualize_projection(u, v)
-
-        # 4) ROI 설정 (예: 중심에서 ±5 픽셀)
-        h, w = self.latest_depth.shape
-        if not self.is_valid_pixel(u, v, self.latest_depth.shape):
-            rospy.logwarn("Projected point outside image bounds")
-            return False
-
-        x_min, x_max = max(u-5, 0), min(u+5, w-1)
-        y_min, y_max = max(v-5, 0), min(v+5, h-1)
-        roi_depth = self.latest_depth[y_min:y_max, x_min:x_max]
-        valid_mask = (roi_depth > 0) & (~np.isnan(roi_depth))
-        if np.count_nonzero(valid_mask) == 0:
-            rospy.logwarn("No valid depth data in ROI")
-            return False
-        avg_depth = np.mean(roi_depth[valid_mask])
-        rospy.loginfo("ROI average depth: {:.2f} m".format(avg_depth))
-        # 만약 평균 깊이가 threshold보다 작으면 장애물이 있다고 판단
-        return avg_depth >= self.obstacle_threshold  # True이면 장애물 없음
-    
+# 쿼터니언에서 yaw 각도를 계산하는 함수
 def quaternion_to_yaw(qx, qy, qz, qw):
     siny_cosp = 2.0 * (qw * qz + qx * qy)
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
     return math.atan2(siny_cosp, cosy_cosp)
 
-# ------------------ MPC Controller ------------------
+# 비선형 MPC 컨트롤러 클래스
 class NonlinearMPCController:
     def __init__(self, dt=0.25, horizon=8, wheelbase=0.26):
         self.dt = dt
@@ -157,14 +26,14 @@ class NonlinearMPCController:
         self.wb = wheelbase
         self.scenario = 'driving'
         self.set_scenario(self.scenario)
-        self.nx = 3  # (x, y, yaw)
-        self.nu = 2  # (v, steer)
+        self.nx = 3  # 상태 변수: (x, y, yaw)
+        self.nu = 2  # 제어 입력: (v, steer)
 
     def set_scenario(self, scenario):
         self.scenario = scenario
         if scenario == "parking":
             rospy.loginfo("[MPC] => parking param set")
-            self.T = 12  # 예측 지평선 증가
+            self.T = 12
             self.Qx = 40.0
             self.Qy = 70.0
             self.Qyaw = 2
@@ -177,7 +46,6 @@ class NonlinearMPCController:
             self.max_steer = math.radians(25.0)
             self.min_steer = -self.max_steer
         else:
-            rospy.loginfo("[MPC] => driving param set")
             self.T = 12
             self.Qx = 700.0
             self.Qy = 700.0
@@ -206,7 +74,6 @@ class NonlinearMPCController:
         lbg = []
         ubg = []
 
-        # 초기 상태 고정
         g += [opt_x[sidx(0)+0] - x0[0], opt_x[sidx(0)+1] - x0[1], opt_x[sidx(0)+2] - x0[2]]
         lbg += [0.0, 0.0, 0.0]
         ubg += [0.0, 0.0, 0.0]
@@ -255,7 +122,8 @@ class NonlinearMPCController:
 
         nlp = {'f': obj, 'x': opt_x, 'g': ca.vertcat(*g)}
         solver = ca.nlpsol('solver', 'ipopt', nlp, {
-            'ipopt': {'max_iter': 200, 'acceptable_tol': 1e-6, 'acceptable_obj_change_tol': 1e-6, 'print_level': 0}, 'print_time': 0
+            'ipopt': {'max_iter': 200, 'print_level': 0, 'acceptable_tol': 1e-6, 'acceptable_obj_change_tol': 1e-6},
+            'print_time': 0
         })
 
         x_init = []
@@ -276,20 +144,20 @@ class NonlinearMPCController:
         all_controls = solx[self.nx*(T+1):].reshape((T, self.nu)).T
         return (all_controls[0, :], all_controls[1, :]), None
 
-# ------------------ ROS Node ------------------
+# 상태 구조체
 class StateStruct:
     def __init__(self, x=0.0, y=0.0, yaw=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
 
+# ROS 노드 클래스
 class MPCNode:
     def __init__(self):
         rospy.init_node("mpc_lateral_node", anonymous=True)
         self.mpc = NonlinearMPCController(dt=0.25, horizon=10, wheelbase=0.26)
-        self.parking_detector = ParkingObstacleDetector()
         self.in_parking_mode = False
-        self.in_exit_parking_mode = False  # 새 exit 모드 플래그
+        self.in_exit_parking_mode = False
         self.parking_path = []
         self.parking_idx = 0
         self.exit_parking_path = []
@@ -305,43 +173,91 @@ class MPCNode:
         self.global_path_ok = False
         self.global_idx = 0
 
-        # 주차 구역 예제 정보 (zone 1)
-        self.parking_zones = {
-            1: {"start": "231", "upper": "900", "lower": "910"}
-            # 추가 주차 구역도 여기에 정의 가능
+        # 주차 및 입구 노드 좌표
+        self.graph_nodes = {
+            "231": (10.06, 0.91),
+            "233": (10.82, 0.92),
+            "235": (11.58, 0.93),
+            "237": (12.34, 0.93),
+            "239": (13.10, 0.93),
+            "900": (9.34, 0.54),
+            "901": (10.04, 0.54),
+            "902": (10.79, 0.54),
+            "903": (11.6, 0.54),
+            "904": (12.44, 0.54),
+            "910": (9.34, 1.3),
+            "911": (10.04, 1.3),
+            "912": (10.79, 1.3),
+            "913": (11.6, 1.3),
+            "914": (12.44, 1.3),
         }
 
-        # 예제 그래프 (노드 좌표는 차량 좌표계, 즉 base_link 기준)
-        self.graph_nodes = {
-            "231": (10.82, 0.92),
-            "900": (9.34, 0.54),
-            "910": (9.34, 1.3),
-            # 글로벌 경로 등 필요한 노드 추가
-        }
-        self.graph_edges = {
+        self.entry_to_parking = {
             "231": ["900", "910"],
-            "900": ["231"],
-            "910": ["231"]
+            "233": ["901", "911"],
+            "235": ["902", "912"],
+            "237": ["903", "913"],
+            "239": ["904", "914"],
         }
-        
+
+        self.parking_spaces = []
+        for entry, parkings in self.entry_to_parking.items():
+            for parking in parkings:
+                x_end, y_end = self.graph_nodes[parking]
+                x_start, y_start = self.graph_nodes[entry]
+                dx = x_end - x_start
+                dy = y_end - y_start
+                theta = math.atan2(dy, dx)
+                phi = theta + math.pi / 2
+                self.parking_spaces.append({
+                    "id": parking,
+                    "center": (x_end, y_end),
+                    "phi": phi,
+                    "l": 0.765,
+                    "w": 0.39,
+                    "occupied": False
+                })
+
+        # 고속도로 차선 변경 관련 변수
+        self.highway_mode = False
+        self.obstacle_detected = False
+        self.in_lane_change_mode = False
+        self.lane_change_path = []
+        self.lane_change_idx = 0
+
+        self.changeable_nodes = {
+            483: (13.56, 10.75), 484: (13.18, 10.75), 485: (12.8, 10.74),
+            486: (12.42, 10.77), 487: (12.04, 10.81), 488: (11.66, 10.87),
+            489: (11.3, 10.99), 490: (10.95, 11.14), 491: (10.61, 11.32),
+            492: (10.28, 11.51), 493: (9.94, 11.68), 494: (9.6, 11.86),
+            495: (9.25, 12.01), 496: (8.88, 12.11), 497: (8.5, 12.15),
+            498: (8.13, 12.20), 499: (7.74, 12.20), 500: (7.36, 12.20),
+            501: (6.98, 12.20),
+        }
+
+        # ROS 구독자 및 발행자
         self.path_sub = rospy.Subscriber("/global_path", Path, self.path_callback, queue_size=1)
         self.loc_sub = rospy.Subscriber("/automobile/localisation", localisation, self.loc_callback, queue_size=1)
         self.imu_sub = rospy.Subscriber("/automobile/IMU", Imu, self.imu_callback, queue_size=1)
-        self.depth_sub = rospy.Subscriber("/camera/depth/image_raw", Image, self.parking_detector.depth_callback, queue_size=1)
         self.park_sub = rospy.Subscriber("/parking_signal", Bool, self.park_signal_cb, queue_size=1)
+        self.highway_sub = rospy.Subscriber("/highway_signal", Bool, self.highway_signal_cb, queue_size=1)
         self.cmd_pub = rospy.Publisher("/automobile/command", String, queue_size=10)
         self.parking_path_pub = rospy.Publisher("/parking_path", Path, queue_size=1)
         self.xref_pub = rospy.Publisher("/mpc_xref", Path, queue_size=1)
+        self.scan_sub = rospy.Subscriber("/scan_depth", LaserScan, self.laserscan_callback, queue_size=1)
         self.timer = rospy.Timer(rospy.Duration(0.05), self.control_loop)
 
     def park_signal_cb(self, msg: Bool):
-    # 받은 주차 신호를 one-shot 방식으로 저장
         if msg.data:
             self.parking_signal = True
             rospy.loginfo("[Parking] => parking signal ON")
         else:
             self.parking_signal = False
             rospy.loginfo("[Parking] => parking signal OFF")
+
+    def highway_signal_cb(self, msg: Bool):
+        self.highway_mode = msg.data
+        rospy.loginfo(f"[Highway] => Highway mode {'ON' if self.highway_mode else 'OFF'}")
 
     def path_callback(self, msg: Path):
         self.global_path = [(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses]
@@ -351,8 +267,8 @@ class MPCNode:
         x_c, y_c = msg.posA, msg.posB
         theta = self.yaw
         wb = 0.26
-        self.x = x_c - 0.5*wb*math.cos(theta)
-        self.y = y_c - 0.5*wb*math.sin(theta)
+        self.x = x_c - 0.5 * wb * math.cos(theta)
+        self.y = y_c - 0.5 * wb * math.sin(theta)
         self.loc_ok = True
 
     def imu_callback(self, msg: Imu):
@@ -360,19 +276,62 @@ class MPCNode:
         self.yaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
         self.yaw_ok = True
 
+    def laserscan_callback(self, msg: LaserScan):
+        if not self.loc_ok or not self.yaw_ok:
+            return
+
+        ranges = msg.ranges
+        angle_min = msg.angle_min
+        angle_increment = msg.angle_increment
+
+        global_points = []
+        for i, r in enumerate(ranges):
+            if msg.range_min < r < msg.range_max:
+                alpha = angle_min + i * angle_increment
+                x_local = r * math.cos(alpha)
+                y_local = r * math.sin(alpha)
+                x_global = self.x + x_local * math.cos(self.yaw) - y_local * math.sin(self.yaw)
+                y_global = self.y + x_local * math.sin(self.yaw) + y_local * math.cos(self.yaw)
+                global_points.append((x_global, y_global))
+
+        for space in self.parking_spaces:
+            if space["occupied"]:
+                continue
+            cx, cy = space["center"]
+            phi = space["phi"]
+            l, w = space["l"], space["w"]
+            for px, py in global_points:
+                dx = px - cx
+                dy = py - cy
+                x_local = dx * math.cos(phi) + dy * math.sin(phi)
+                y_local = -dx * math.sin(phi) + dy * math.cos(phi)
+                if -l / 2 <= x_local <= l / 2 and -w / 2 <= y_local <= w / 2:
+                    space["occupied"] = True
+                    rospy.loginfo(f"[Parking] Space {space['id']} is now occupied.")
+                    break
+
+        if self.highway_mode:
+            angles = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
+            front_idx = np.where((angles >= -0.1745) & (angles <= 0.1745))[0]
+            front_ranges = np.array(msg.ranges)[front_idx]
+            if any(r < 1.0 and r > msg.range_min for r in front_ranges):
+                self.obstacle_detected = True
+                rospy.loginfo("[Obstacle] Detected ahead in highway mode.")
+            else:
+                self.obstacle_detected = False
+
     def apply_cubic_spline(self, path_coords):
         if len(path_coords) < 3:
             return path_coords
         path_array = np.array(path_coords)
-        distances = np.sqrt(np.sum(np.diff(path_array, axis=0)**2, axis=1))
+        distances = np.sqrt(np.sum(np.diff(path_array, axis=0) ** 2, axis=1))
         t = np.concatenate(([0], np.cumsum(distances)))
         cs_x = CubicSpline(t, path_array[:, 0])
         cs_y = CubicSpline(t, path_array[:, 1])
         t_new = np.linspace(0, t[-1], num=100)
         new_x = cs_x(t_new)
         new_y = cs_y(t_new)
-        new_path = list(zip(new_x, new_y))
-        return new_path
+        return list(zip(new_x, new_y))
 
     def build_parking_path(self, start_node, end_node):
         import heapq
@@ -386,9 +345,7 @@ class MPCNode:
                 continue
             if cur_node == end_node:
                 break
-            if cur_node not in self.graph_edges:
-                continue
-            neighbors = self.graph_edges[cur_node]
+            neighbors = self.entry_to_parking.get(cur_node, []) if cur_node in self.entry_to_parking else []
             for nxt in neighbors:
                 cost = math.hypot(self.graph_nodes[nxt][0] - self.graph_nodes[cur_node][0],
                                   self.graph_nodes[nxt][1] - self.graph_nodes[cur_node][1])
@@ -408,25 +365,41 @@ class MPCNode:
 
     def build_xref(self, path_xy, near_i, st, is_parking=False):
         T = self.mpc.T
-        xref = np.zeros((3, T+1))
+        xref = np.zeros((3, T + 1))
         n = len(path_xy)
-        for i in range(T+1):
-            idx = min(near_i + i, n-1)
+        for i in range(T + 1):
+            idx = min(near_i + i, n - 1)
             xref[0, i] = path_xy[idx][0]
             xref[1, i] = path_xy[idx][1]
             if i == 0:
                 xref[2, i] = st.yaw
             else:
-                if is_parking and idx == n-1:
+                if is_parking and idx == n - 1:
                     xref[2, i] = 0.0
                 else:
-                    dx = path_xy[idx][0] - path_xy[idx-1][0]
-                    dy = path_xy[idx][1] - path_xy[idx-1][1]
-                    prev_yaw = xref[2, i-1]
+                    dx = path_xy[idx][0] - path_xy[idx - 1][0]
+                    dy = path_xy[idx][1] - path_xy[idx - 1][1]
+                    prev_yaw = xref[2, i - 1]
                     new_yaw = math.atan2(dy, dx)
                     xref[2, i] = prev_yaw + math.atan2(math.sin(new_yaw - prev_yaw),
                                                        math.cos(new_yaw - prev_yaw))
         return xref
+
+    def get_nearest_changeable_node(self, x, y):
+        min_dist = float('inf')
+        nearest_node_id = None
+        for node_id, (nx, ny) in self.changeable_nodes.items():
+            dist = math.hypot(x - nx, y - ny)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_node_id = node_id
+        next_node_id = nearest_node_id + 2 if nearest_node_id < max(self.changeable_nodes.keys()) else nearest_node_id
+        return next_node_id
+
+    def build_lane_change_path(self, x, y, nearest_node_id):
+        target_node = self.changeable_nodes[nearest_node_id]
+        path = [(x, y), target_node]
+        return self.apply_cubic_spline(path)
 
     def control_loop(self, event):
         if not (self.loc_ok and self.yaw_ok) or not self.global_path_ok:
@@ -434,9 +407,7 @@ class MPCNode:
 
         st = StateStruct(self.x, self.y, self.yaw)
 
-        # 상태에 따라 모드를 구분: driving, parking, exit_parking
-        if not self.in_parking_mode and not self.in_exit_parking_mode:
-            # driving mode: 글로벌 경로 따라가기
+        if not self.in_parking_mode and not self.in_exit_parking_mode and not self.in_lane_change_mode:
             near_i = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
             self.global_idx = near_i
             xref = self.build_xref(self.global_path, near_i, st, is_parking=False)
@@ -447,33 +418,42 @@ class MPCNode:
             v_cmd = v_traj[0] if v_traj is not None else 0.0
             s_cmd = steer_traj[0] if steer_traj is not None else 0.0
 
-            # 예: 특정 지점(232) 근처에 도달하면 주차 신호가 있으면 주차 모드로 전환
-            dist_zone_start = math.hypot(st.x - 10.04, st.y - 0.92)
-            if dist_zone_start < 0.2 and getattr(self, 'parking_signal', False):
-                rospy.loginfo("[Parking] => Switch to parking mode: zone1")
-                # zone 1 정보 (예시)
-                zone = {
-                    "start": "231",
-                    "upper": "900",
-                    "lower": "910"
-                }
-                candidate = self.select_parking_candidate(zone)
-                if candidate is not None:
-                    rospy.loginfo(f"[Parking] => Selected candidate: {candidate}")
-                    self.in_parking_mode = True
-                    self.parking_path = self.build_parking_path(zone["start"], candidate)
-                    self.parking_idx = 0
-                    self.visualize_parking_path(self.parking_path)
-                    self.parking_signal = False
-                else:
-                    rospy.logwarn("[Parking] => No clear parking spot in zone1. Waiting...")
+            if self.highway_mode and self.obstacle_detected:
+                nearest_node_id = self.get_nearest_changeable_node(st.x, st.y)
+                self.lane_change_path = self.build_lane_change_path(st.x, st.y, nearest_node_id)
+                self.in_lane_change_mode = True
+                self.lane_change_idx = 0
+                rospy.loginfo("[Lane Change] Starting lane change to avoid obstacle.")
+
+        elif self.in_lane_change_mode:
+            near_i = self.get_nearest_idx(st.x, st.y, self.lane_change_path, self.lane_change_idx)
+            self.lane_change_idx = near_i
+            xref = self.build_xref(self.lane_change_path, near_i, st, is_parking=False)
+            self.visualize_xref(xref)
+            self.mpc.set_scenario("driving")
+            x0 = np.array([st.x, st.y, st.yaw])
+            (v_traj, steer_traj), _ = self.mpc.solve_mpc(x0, xref)
+            v_cmd = v_traj[0] if v_traj is not None else 0.0
+            s_cmd = steer_traj[0] if steer_traj is not None else 0.0
+
+            last_x, last_y = self.lane_change_path[-1]
+            dist_end = math.hypot(st.x - last_x, st.y - last_y)
+            if dist_end < 0.15:
+                rospy.loginfo("[Lane Change] Completed. Preparing to return to global path.")
+                return_idx = self.get_nearest_idx(st.x, st.y, self.global_path, 0)+4
+                return_point = self.global_path[return_idx]
+                spline_path = self.apply_cubic_spline([(st.x, st.y), return_point])
+                self.lane_change_path=spline_path
+                self.in_lane_change_mode = False
+                self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
+                rospy.loginfo("Lane change finished => back to driving")
+                return
+
         elif self.in_parking_mode:
-            # parking mode: 주차 경로 따라가기
             if len(self.parking_path) < 2:
                 rospy.logwarn("[Parking] no valid path => back to driving")
                 self.in_parking_mode = False
                 return
-
             near_i = self.get_nearest_idx(st.x, st.y, self.parking_path, self.parking_idx)
             self.parking_idx = near_i
             xref = self.build_xref(self.parking_path, near_i, st, is_parking=True)
@@ -487,27 +467,23 @@ class MPCNode:
             last_x, last_y = self.parking_path[-1]
             dist_end = math.hypot(st.x - last_x, st.y - last_y)
             yaw_error = abs(st.yaw)
-            rospy.loginfo(f"[Parking] dist_end={dist_end:.3f}, yaw_error={math.degrees(yaw_error):.2f} deg")
             if dist_end < 0.15 and yaw_error < math.radians(10):
-                rospy.loginfo("[Parking] => park complete. Pausing for 1 sec, then exiting parking mode.")
-                # rospy.sleep(2.0)
-                for _ in range(50000):
-                    cmd_dict_1 = {'action': '1', 'speed': 0}
-                    self.cmd_pub.publish(json.dumps(cmd_dict_1))
-                # 주차 완료 후 exit parking 모드로 전환하고 주차 경로의 역순을 exit 경로로 설정
+                rospy.loginfo("[Parking] => park complete. Switching to exit mode.")
                 self.in_parking_mode = False
                 self.in_exit_parking_mode = True
+                for _ in range(100000):
+                    cmd_dict_1 = {'action': '1', 'speed': 0}
+                    self.cmd_pub.publish(json.dumps(cmd_dict_1))
                 self.exit_parking_path = list(reversed(self.parking_path))
                 self.exit_parking_idx = 0
                 self.visualize_parking_path(self.exit_parking_path)
+
         elif self.in_exit_parking_mode:
-            # exit parking mode: 역순 경로 따라 글로벌 경로로 복귀
             if len(self.exit_parking_path) < 2:
                 rospy.logwarn("[Parking Exit] no valid exit path => back to driving")
                 self.in_exit_parking_mode = False
                 self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
                 return
-
             near_i = self.get_nearest_idx(st.x, st.y, self.exit_parking_path, self.exit_parking_idx)
             self.exit_parking_idx = near_i
             xref = self.build_xref(self.exit_parking_path, near_i, st, is_parking=True)
@@ -518,17 +494,14 @@ class MPCNode:
             v_cmd = v_traj[0] if v_traj is not None else 0.0
             s_cmd = steer_traj[0] if steer_traj is not None else 0.0
 
-            # exit 완료 판단: exit 경로의 마지막 점(원래 주차 시작점, 예: 232) 근처 도달
             exit_target = self.exit_parking_path[-1]
             dist_exit = math.hypot(st.x - exit_target[0], st.y - exit_target[1])
-            rospy.loginfo(f"[Parking Exit] dist_exit={dist_exit:.3f}")
             if dist_exit < 0.15:
                 rospy.loginfo("[Parking Exit] => exit complete. Returning to global path.")
                 self.in_exit_parking_mode = False
                 self.global_idx = self.get_nearest_idx(st.x, st.y, self.global_path, self.global_idx)
 
         steer_deg = math.degrees(s_cmd)
-        # rospy.loginfo(f"[MPC] parking={self.in_parking_mode or self.in_exit_parking_mode}, v={v_cmd:.2f}, steer={s_cmd:.2f} rad => {steer_deg:.2f} deg")
         cmd_dict_1 = {'action': '1', 'speed': float(v_cmd)}
         self.cmd_pub.publish(json.dumps(cmd_dict_1))
         cmd_dict_2 = {'action': '2', 'steerAngle': float(-steer_deg)}
@@ -538,26 +511,7 @@ class MPCNode:
         if start_i >= len(path):
             return len(path) - 1
         return min(range(start_i, len(path)), key=lambda i: (x - path[i][0])**2 + (y - path[i][1])**2)
-    
-    def select_parking_candidate(self, zone):
-        """
-        주차 구역(zone)의 후보(upper, lower)를 평가하여 장애물이 없는 후보를 선택.
-        여기서는 각 후보에 대해 장애물 여부를 결정하는 detect_obstacle_in_parking_spot() 함수를 사용.
-        """
-        upper = zone["upper"]
-        lower = zone["lower"]
-        upper_clear = self.parking_detector.detect_obstacle_in_parking_spot(upper, self.graph_nodes)
-        lower_clear = self.parking_detector.detect_obstacle_in_parking_spot(lower, self.graph_nodes)
-        rospy.loginfo(f"[Parking] candidate {upper} clear: {upper_clear}, candidate {lower} clear: {lower_clear}")
-        if upper_clear and not lower_clear:
-            return upper
-        elif lower_clear and not upper_clear:
-            return lower
-        elif upper_clear and lower_clear:
-            return upper
-        else:
-            return None
-        
+
     def visualize_xref(self, xref):
         path_msg = Path()
         path_msg.header.frame_id = "map"
