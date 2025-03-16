@@ -7,24 +7,29 @@
       name  = "PRK_P1"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P1 -x 4.047 -y -2.358 -z 0.078998 -R 0  -P 0  -Y 0"/>
+      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P1 -x 12.998800 -y 0.666347 -z 0 -R 0  -P 0  -Y 0"/>
 
   <node
       name  = "PRK_P2"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P2 -x 2.857 -y -2.358 -z 0.078998 -R 0  -P 0  -Y 0"/>
+      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P2 -x 13.004700 -y 1.132960 -z 0 -R 0  -P 0  -Y 0"/>
   
   <node
       name  = "PRK_P3"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P3 -x 2.779 -y -1.452 -z 0.078998 -R 0  -P 0  -Y 3.141592"/>
+      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P3 -x 8.900760 -y 0.668119 -z 0 -R 0  -P 0  -Y 0"/>
   
   <node
       name  = "PRK_P4"
       pkg   = "gazebo_ros"
       type  = "spawn_model"
-      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P4 -x 4.459 -y -1.452 -z 0.078998 -R 0  -P 0  -Y 3.141592"/>
+      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P4 -x 8.909340 -y 8.909340 -z 0 -R 0  -P 0  -Y 0"/>
+  <node
+      name  = "PRK_P5"
+      pkg   = "gazebo_ros"
+      type  = "spawn_model"
+      args  = "-file $(find models_pkg)/parking_sign/model.sdf -sdf -model PRK_P5 -x 14.877600 -y 4.557020 -z 0 -R 0  -P 0  -Y 3.13"/>
 
 </launch>

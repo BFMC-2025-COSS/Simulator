@@ -7,36 +7,41 @@
 		name  = "CWALK_K"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_K -x 7.312 -y -3.240 -z 0.078998 -R 0  -P 0  -Y 3.141592"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_K -x 8.883310 -y 3.599500 -z 0 -R 0  -P 0  -Y 0"/>
 
   <node
 		name  = "CWALK_L"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_L -x 6.627 -y -4.181 -z 0.078998 -R 0  -P 0  -Y 0"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_L -x 9.462730 -y 4.439420 -z 0 -R 0  -P 0  -Y -3.13"/>
 
   <node
 		name  = "CWALK_M"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_M -x 6.777 -y -1.456 -z 0.078998 -R 0  -P 0  -Y 3.141592"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_M -x 17.317699 -y 2.498300 -z 0 -R 0  -P 0  -Y 1.570796"/>
 
   <node
 		name  = "CWALK_N"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_N -x 6.130 -y -2.342 -z 0.078998 -R 0  -P 0  -Y 0"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_N -x 15.057500 -y 3.186310 -z 0 -R 0  -P 0  -Y -1.570796"/>
 
   <node
 		name  = "CWALK_O"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_O -x 1.109 -y -12.486 -z 0.078998 -R 0  -P 0  -Y 1.570796"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_O -x 8.099030 -y 0.674498 -z 0 -R 0  -P 0  -Y 0"/>
 
   <node
 		name  = "CWALK_P"
 	 	pkg   = "gazebo_ros"
    		type  = "spawn_model"
-   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_P -x 0.195 -y -11.869 -z 0.078998 -R 0  -P 0  -Y 4.712388"/>
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_P -x 4.441370 -y 8.171780 -z 0 -R 0  -P 0  -Y -1.570796"/>
+  <node
+		name  = "CWALK_5"
+	 	pkg   = "gazebo_ros"
+   		type  = "spawn_model"
+   		args  = "-file $(find models_pkg)/crosswalk_sign/model.sdf -sdf -model CWALK_5 -x 5.303380 -y 7.592020 -z 0 -R 0  -P 0  -Y 1.570796"/>
 
 </launch>

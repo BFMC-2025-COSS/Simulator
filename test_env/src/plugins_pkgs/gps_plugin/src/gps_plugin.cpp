@@ -1,58 +1,78 @@
-
 #include "gps_plugin.hpp"
+#include <ros/ros.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <tf/tf.h>
 
 #define DEBUG false
 
 namespace gazebo
 {
-    namespace gps
-    {   
-        GPS::GPS():ModelPlugin() {}
-     		
-        void GPS::Load(physics::ModelPtr model_ptr, sdf::ElementPtr sdf_ptr)
+    class GPS : public ModelPlugin
+    {
+    public:
+        GPS() : ModelPlugin() {}
+
+        virtual void Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
         {
-          nh = boost::make_shared<ros::NodeHandle>();
-          timer = nh->createTimer(ros::Duration(0.25), std::bind(&GPS::OnUpdate, this));
+            if (!ros::isInitialized())
+            {
+                ROS_FATAL_STREAM("A ROS node for Gazebo has not been initialized, unable to load plugin. "
+                                 "Load the Gazebo system plugin 'libgazebo_ros_api_plugin.so' in the gazebo_ros package)");
+                return;
+            }
 
-  			  // Save a pointer to the model for later use
-  			  this->m_model = model_ptr;
-  			
-        	// Create topic name      	
-        	std::string topic_name = "/automobile/localisation";
-  	        
-          // Initialize ros, if it has not already been initialized.
-    			if (!ros::isInitialized())
-    			{
-      			  int argc = 0;
-      			  char **argv = NULL;
-      			  ros::init(argc, argv, "localisationNODEvirt", ros::init_options::NoSigintHandler);
-    			}
+            this->model = _model;
+            this->world = _model->GetWorld();
 
-          this->m_ros_node.reset(new ::ros::NodeHandle("/localisationNODEvirt"));
+            this->nodeHandle.reset(new ros::NodeHandle("localisationNODEvirt"));
+            this->localisationPublisher = this->nodeHandle->advertise<geometry_msgs::PoseWithCovarianceStamped>("/automobile/localisation", 10);
 
-        	this->m_pubGPS = this->m_ros_node->advertise<utils::localisation>(topic_name, 2);
-        	
-          if(DEBUG)
-          {
-              std::cerr << "\n\n";
-              ROS_INFO_STREAM("====================================================================");
-              ROS_INFO_STREAM("[gps_plugin] attached to: " << this->m_model->GetName());
-              ROS_INFO_STREAM("[gps_plugin] publish to: "  << topic_name);
-              ROS_INFO_STREAM("[gps_plugin] Usefull data: linear x, linear y, angular z");
-              ROS_INFO_STREAM("====================================================================\n\n");
-          }
+            // Set up a ROS timer to call OnUpdate if you want more realistic increase the duration
+            this->timer = this->nodeHandle->createTimer(ros::Duration(0.00001), &GPS::OnTimerEvent, this);
         }
 
-        // Publish the updated values
-        void GPS::OnUpdate()
+        void OnTimerEvent(const ros::TimerEvent&)
         {
-		this->m_gps_pose.timestamp  = this->m_model->GetWorld()->SimTime().Float();
-           	this->m_gps_pose.posA   = this->m_model->RelativePose().Pos().X() + (rand() / (float)RAND_MAX * 0.2) - 0.1;
-           	this->m_gps_pose.posB   = abs(this->m_model->RelativePose().Pos().Y()) + (rand() / (float)RAND_MAX * 0.2) - 0.1;
-           	this->m_gps_pose.rotA   = this->m_model->RelativePose().Rot().Yaw();
-           	this->m_gps_pose.rotB   = this->m_model->RelativePose().Rot().Yaw();
-               this->m_pubGPS.publish(this->m_gps_pose);
-        };      
-    }; //namespace trafficLight
-    GZ_REGISTER_MODEL_PLUGIN(gps::GPS)
-}; // namespace gazebo
+            geometry_msgs::PoseWithCovarianceStamped localisationValue;
+
+            localisationValue.header.frame_id = "map";
+            localisationValue.header.stamp = ros::Time::now();
+
+            // Assuming m_gps_pose is previously updated with your GPS logic
+            localisationValue.pose.pose.position.x = this->model->RelativePose().Pos().X() + (static_cast<float>(rand()) / RAND_MAX * 0.2f) - 0.1f;
+            localisationValue.pose.pose.position.y = abs(this->model->RelativePose().Pos().Y()) + (static_cast<float>(rand()) / RAND_MAX * 0.2f) - 0.1f;
+            double yaw = this->model->RelativePose().Rot().Yaw();
+
+            tf::Quaternion quaternion = tf::createQuaternionFromYaw(yaw);
+            geometry_msgs::Quaternion q_msg;
+            tf::quaternionTFToMsg(quaternion, q_msg);
+
+            localisationValue.pose.pose.orientation = q_msg;
+
+            // Set covariance matrix for position x, y
+            double covariance[36] = {0};
+            covariance[0] = 0.04; // Variance of x
+            covariance[7] = 0.04; // Variance of y
+            covariance[14] = 0.0; // Variance of z, very high since we don't measure it
+            covariance[21] = 999999; // Variance of roll
+            covariance[28] = 999999; // Variance of pitch
+            covariance[35] = 0.005; // Variance of yaw
+
+            for (int i = 0; i < 36; ++i) {
+                localisationValue.pose.covariance[i] = covariance[i];
+            }
+
+            this->localisationPublisher.publish(localisationValue);
+        }
+
+    private:
+        std::unique_ptr<ros::NodeHandle> nodeHandle;
+        ros::Publisher localisationPublisher;
+        ros::Timer timer;  // ROS timer to handle scheduled updates
+        physics::ModelPtr model;
+        physics::WorldPtr world;
+    };
+
+    // Register this plugin with the simulator
+    GZ_REGISTER_MODEL_PLUGIN(GPS)
+} // namespace gazebo

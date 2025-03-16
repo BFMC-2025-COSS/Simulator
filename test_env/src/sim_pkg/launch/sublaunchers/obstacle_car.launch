@@ -6,9 +6,9 @@
        name  = "obstacle_rcCar_1"
        pkg   = "gazebo_ros"
        type  = "spawn_model"
-       args  = "-file $(find models_pkg)/rcCar_assembly_obstacle/model.sdf -model obstacle_rcCar_1 -sdf -x 3.703 -y -2.580 -z 0.032939 -Y 1.567"/>
+       args  = "-file $(find models_pkg)/rcCar_assembly_obstacle/model.sdf -model obstacle_rcCar_1 -sdf -x 10.983700 -y 11.832900 -z 0 -Y 2.678038"/>
  
-    <node
+    <!-- <node
        name  = "obstacle_rcCar_2"
        pkg   = "gazebo_ros"
        type  = "spawn_model"
@@ -35,5 +35,5 @@
        name  = "obstacle_rcCar_6"
        pkg   = "gazebo_ros"
        type  = "spawn_model"
-       args  = "-file $(find models_pkg)/rcCar_assembly_obstacle/model.sdf -model obstacle_rcCar_6 -sdf -x 11.108 -y -10.675 -z 0.032939 -Y 1.523"/>
+       args  = "-file $(find models_pkg)/rcCar_assembly_obstacle/model.sdf -model obstacle_rcCar_6 -sdf -x 11.108 -y -10.675 -z 0.032939 -Y 1.523"/> -->
   </launch>
