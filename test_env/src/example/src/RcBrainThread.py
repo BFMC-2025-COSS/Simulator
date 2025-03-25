@@ -27,6 +27,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 import os
 import copy
+import rospy
+from std_msgs.msg import Float64
 
 class RcBrainConfigParams:
     def __init__(self,maxSteerAngle,maxSpeed,steerAngleStep,speedStep, kpStep, kiStep, kdStep):
@@ -66,6 +68,10 @@ class RcBrainThread:
         self.pids_kd = 0.000222
         self.pids_tf = 0.040000
 
+        
+        # self.speed_pub = rospy.Publisher('/rear_wheel_speed', Float64, queue_size=10)
+        # self.steer_pub = rospy.Publisher('/steering_angle', Float64, queue_size=10)
+
         #----------------- CONSTANT VALUES --------------------
         #this values do not change
         self.parameterIncrement =   0.1
@@ -84,6 +90,14 @@ class RcBrainThread:
 
         #----------------- DIRECTION SIGNALS STATES -----------
         self.currentState =[False,False,False,False,False, False, False, False]   #UP, DOWN , LEFT, RIGHT, BRAKE, PIDActive, PIDSvalues
+        # self.timer = rospy.Timer(rospy.Duration(0.1), self.publish_data)
+
+    # def publish_data(self, event=None):
+    #     """ Publish speed and steering angle continuously. """
+    #     self.speed_pub.publish(Float64(self.speed))
+    #     self.steer_pub.publish(Float64(self.steerAngle))
+
+
 
     # ===================================== DISPLAY INFO =================================
     def displayInfo(self):
@@ -173,7 +187,7 @@ class RcBrainThread:
         self._updatePID(data)
         self._updateParameters(data)
         self.displayInfo()
-        
+        # self.publish_data()
         return self._stateDict()        
 
     # ===================================== UPDATE SPEED =================================
