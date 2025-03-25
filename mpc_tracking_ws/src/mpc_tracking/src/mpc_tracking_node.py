@@ -440,7 +440,7 @@ class MPCNode:
             dist_end = math.hypot(st.x - last_x, st.y - last_y)
             if dist_end < 0.15:
                 rospy.loginfo("[Lane Change] Completed. Preparing to return to global path.")
-                return_idx = self.get_nearest_idx(st.x, st.y, self.global_path, 0)+4
+                return_idx = self.get_nearest_idx(st.x, st.y, self.global_path, 0)+7
                 return_point = self.global_path[return_idx]
                 spline_path = self.apply_cubic_spline([(st.x, st.y), return_point])
                 self.lane_change_path=spline_path
